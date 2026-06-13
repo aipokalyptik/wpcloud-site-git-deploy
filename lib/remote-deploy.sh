@@ -90,9 +90,11 @@ require_remote_capabilities() {
 
 assert_public_symlinks_under_docroot() {
   local docroot="$1"
+  local deployment_filter="${2:-}"
   local docroot_real
   local link_path
   local target
+  local owner
   local parent_real
   local target_dir
   local target_base
@@ -108,6 +110,13 @@ assert_public_symlinks_under_docroot() {
   { find "$docroot" -path "$docroot/.github-ssh-deploy" -prune -o -type l -print0 2>/dev/null || true; } |
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
+
+    if [[ -n "$deployment_filter" ]]; then
+      if ! owner="$(deployment_owner_from_target "$target")" || [[ "$owner" != "$deployment_filter" ]]; then
+        continue
+      fi
+    fi
+
     [[ "$target" != /* ]] || die "public symlink target is absolute: ${link_path#"$docroot"/}"
     if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
       die "public symlink target contains HOME: ${link_path#"$docroot"/}"
@@ -745,7 +754,7 @@ apply_claim_transition() {
   # new release, so public requests never see old symlinks pointing into a
   # not-yet-current tree.
   cleanup_removed_claims "$docroot" "$deployment_id" "$removed_claims_file"
-  assert_public_symlinks_under_docroot "$docroot"
+  assert_public_symlinks_under_docroot "$docroot" "$deployment_id"
 }
 
 rollback_release() {
