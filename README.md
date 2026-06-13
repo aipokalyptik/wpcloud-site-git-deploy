@@ -57,6 +57,15 @@ For SSH remotes, install a deploy key under `$HOME/.ssh/` and make sure `ssh -T 
 
 For HTTPS remotes, use Git’s standard credential storage or an HTTPS URL/token mechanism appropriate for the site user. Do not place credentials in the repository being deployed.
 
+## Git LFS And Submodules
+
+Submodules are initialized recursively during deploy.
+
+Git LFS is supported when `git-lfs` is available in the site user’s `PATH`.
+The CLI does not install Git LFS automatically; install it under `$HOME` or
+another user-writable location if the host does not provide it. Deploys fail
+instead of publishing pointer files when LFS content remains unresolved.
+
 ## Deploy Model
 
 Each deploy:
