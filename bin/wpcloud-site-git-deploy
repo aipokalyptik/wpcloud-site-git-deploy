@@ -187,6 +187,7 @@ prepare_git_features() {
   local path
   local attr
   local uses_lfs=0
+  local files_list="$TMP_DIR/git-files.$$.list"
 
   if [[ -f "$worktree/.gitmodules" ]]; then
     git -C "$worktree" submodule update --init --recursive
@@ -198,13 +199,15 @@ prepare_git_features() {
   # The deploy source is the checked-out filesystem, but LFS pointer files are
   # valid text files from Git's perspective. Detect LFS attributes and pull real
   # objects before copying into the docroot release tree.
+  git -C "$worktree" ls-files -z >"$files_list"
   while IFS= read -r -d '' path; do
     attr="$(git -C "$worktree" check-attr filter -- "$path" 2>/dev/null || true)"
     if [[ "$attr" == *": filter: lfs" ]]; then
       uses_lfs=1
       break
     fi
-  done < <(git -C "$worktree" ls-files -z 2>/dev/null)
+  done <"$files_list"
+  rm -f "$files_list"
 
   if ((uses_lfs)); then
     command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
