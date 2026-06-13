@@ -190,7 +190,7 @@ prepare_git_features() {
   local files_list="$TMP_DIR/git-files.$$.list"
 
   if [[ -f "$worktree/.gitmodules" ]]; then
-    git -C "$worktree" submodule update --init --recursive
+    git -C "$worktree" submodule update --init --recursive >&2
     if git -C "$worktree" submodule status --recursive | grep -Eq '^-'; then
       die "one or more submodules are uninitialized"
     fi
@@ -211,8 +211,8 @@ prepare_git_features() {
 
   if ((uses_lfs)); then
     command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
-    git -C "$worktree" lfs install --local
-    git -C "$worktree" lfs pull
+    git -C "$worktree" lfs install --local >&2
+    git -C "$worktree" lfs pull >&2
     if grep -RIl '^version https://git-lfs.github.com/spec/v1$' "$worktree" >/dev/null 2>&1; then
       die "Git LFS pointer files remain after git lfs pull"
     fi
