@@ -233,7 +233,7 @@ create_worktree() {
 
   repo_dir="$(repo_dir_for "$name")"
   worktree="$TMP_DIR/$name/$release_id/source"
-  rm -rf "$TMP_DIR/$name/$release_id"
+  rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
   mkdir -p "$(dirname "$worktree")"
 
   # Clone from the local cache so branches, tags, LFS config, and submodule
@@ -324,7 +324,7 @@ deploy_ref() {
   copy_worktree_to_incoming "$worktree" "$release_id"
   promote_release "$release_id" "$helper"
   write_release_metadata "$release_id" "$mode" "$value" "$commit"
-  rm -rf "$TMP_DIR/$name/$release_id"
+  rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
   printf '%s %s %s\n' "$release_id" "$mode" "$commit"
 }
 
