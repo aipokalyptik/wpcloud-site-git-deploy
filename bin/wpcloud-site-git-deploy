@@ -343,6 +343,32 @@ current_release_id() {
 select_rollback_release() {
   local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
   local current="${1:-}"
+  local metadata_file
+  local release_name
+  local metadata_candidates="$TMP_DIR/rollback-candidates.$$.txt"
+
+  # Failed deployments can leave a release directory behind after incoming is
+  # moved but before current is switched. Success metadata is written only after
+  # promotion completes, so default rollback should prefer metadata-backed
+  # releases instead of blindly picking the newest directory.
+  : >"$metadata_candidates"
+  find "$base/metadata" -mindepth 1 -maxdepth 1 -type f -name '*.env' 2>/dev/null |
+    while IFS= read -r metadata_file; do
+      release_name="${metadata_file##*/}"
+      release_name="${release_name%.env}"
+      [[ "$release_name" == "$current" ]] && continue
+      [[ -d "$base/releases/$release_name" ]] || continue
+      printf '%s\n' "$base/releases/$release_name"
+    done >"$metadata_candidates"
+
+  if [[ -s "$metadata_candidates" ]]; then
+    xargs ls -dt <"$metadata_candidates" 2>/dev/null |
+      head -n 1 |
+      xargs basename
+    rm -f "$metadata_candidates"
+    return 0
+  fi
+  rm -f "$metadata_candidates"
 
   find "$base/releases" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r path; do
