@@ -56,6 +56,8 @@ chmod +x "$fake_bin/mv"
 export PATH="$fake_bin:$PATH"
 
 git -C "$source_repo" init -b main >/dev/null
+git -C "$source_repo" config user.name "WP Cloud Deploy Test"
+git -C "$source_repo" config user.email "wpcloud-deploy-test@example.invalid"
 mkdir -p "$source_repo/assets"
 printf 'hello from main\n' >"$source_repo/index.html"
 printf 'asset v1\n' >"$source_repo/assets/app.txt"
