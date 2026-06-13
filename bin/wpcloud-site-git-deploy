@@ -132,6 +132,7 @@ default_exclude_file() {
 .git
 .git/
 .gitignore
+.gitattributes
 .github/
 .svn/
 .hg/
