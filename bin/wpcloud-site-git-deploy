@@ -239,9 +239,12 @@ create_worktree() {
   rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
   mkdir -p "$(dirname "$worktree")"
 
-  # Clone from the local cache so branches, tags, LFS config, and submodule
-  # metadata behave like a normal checkout while keeping all Git state in $HOME.
+  # Clone Git objects from the local cache for speed, then point origin back at
+  # the configured repository URL. Git LFS and submodule prep may need objects
+  # that are not present in the cache, so their network fetches must not use the
+  # local file:// clone as the upstream.
   git clone --no-checkout "$repo_dir" "$worktree"
+  git -C "$worktree" remote set-url origin "$repo_url"
   git -C "$worktree" checkout --detach "$commit"
   prepare_git_features "$worktree"
   printf '%s\n' "$worktree"
