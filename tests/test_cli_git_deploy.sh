@@ -63,6 +63,7 @@ printf 'hello from main\n' >"$source_repo/index.html"
 printf 'asset v1\n' >"$source_repo/assets/app.txt"
 printf 'repo bookkeeping\n' >"$source_repo/.gitignore"
 printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$source_repo/.gitattributes"
+printf '[submodule "vendor/example"]\n\tpath = vendor/example\n\turl = https://example.invalid/example.git\n' >"$source_repo/.gitmodules"
 ln -s assets/app.txt "$source_repo/app-link.txt"
 git -C "$source_repo" add .
 git -C "$source_repo" commit -m "initial" >/dev/null
@@ -85,6 +86,7 @@ HOME="$home_dir" "$cli" deploy site --tag v1 >/dev/null
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy did not publish v1 content"
 [[ ! -e "$docroot/.gitignore" ]] || fail ".gitignore should be excluded by default"
 [[ ! -e "$docroot/.gitattributes" ]] || fail ".gitattributes should be excluded by default"
+[[ ! -e "$docroot/.gitmodules" ]] || fail ".gitmodules should be excluded by default"
 [[ -L "$docroot/app-link.txt" ]] || fail "repo symlink should be deployed through public claim"
 [[ -L "$docroot/index.html" ]] || fail "published index should be a symlink"
 index_target="$(readlink "$docroot/index.html")"

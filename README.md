@@ -89,7 +89,7 @@ The previous release tree and public symlinks are used as deploy truth; no manif
 - Sticky root/group-owned writable directories act as dynamic boundaries, which keeps WordPress plugin/theme deployments from claiming too broad a path.
 - Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
 
-Default excludes include common Git and credential files such as `.git`, `.git/`, `.gitignore`, `.gitattributes`, `.github/`, `.env`, `.aws/`, `.ssh/`, `.npmrc`, `.pypirc`, and `.netrc`.
+Default excludes include common Git and credential files such as `.git`, `.git/`, `.gitignore`, `.gitattributes`, `.gitmodules`, `.github/`, `.env`, `.aws/`, `.ssh/`, `.npmrc`, `.pypirc`, and `.netrc`.
 
 ## Rollback
 
