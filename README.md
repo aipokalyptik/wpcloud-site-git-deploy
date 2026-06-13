@@ -1,0 +1,99 @@
+# WP Cloud Site Git Deploy
+
+`wpcloud-site-git-deploy` is a Bash CLI for deploying a Git repository from an SSH session on a WP Cloud or Pressable site.
+
+It keeps Git checkouts, config, and credentials under `$HOME`, but copies every web-visible release into the docroot deployment namespace before promotion. Public symlinks are always relative links into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/current/...`; they never point back into `$HOME`.
+
+## Install
+
+From an SSH session on the site:
+
+```bash
+git clone https://github.com/aipokalyptik/wpcloud-site-git-deploy.git /tmp/wpcloud-site-git-deploy
+/tmp/wpcloud-site-git-deploy/scripts/install.sh
+export PATH="$HOME/.wpcloud-site-git-deploy/bin:$PATH"
+```
+
+Installed runtime files:
+
+- `$HOME/.wpcloud-site-git-deploy/bin/wpcloud-site-git-deploy`
+- `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
+- `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`
+- `$HOME/.wpcloud-site-git-deploy/repos/<name>/`
+- `$HOME/.wpcloud-site-git-deploy/tmp/`
+
+## Quick Start
+
+```bash
+wpcloud-site-git-deploy init site \
+  --repo https://github.com/example/site-content.git \
+  --docroot /srv/htdocs \
+  --deployment-id site \
+  --default-ref main
+
+wpcloud-site-git-deploy deploy site --branch main
+wpcloud-site-git-deploy deploy site --tag v1.2.3
+wpcloud-site-git-deploy deploy site --commit 0123456789abcdef
+wpcloud-site-git-deploy update site
+wpcloud-site-git-deploy rollback site
+```
+
+Inspection commands:
+
+```bash
+wpcloud-site-git-deploy status site
+wpcloud-site-git-deploy releases site
+wpcloud-site-git-deploy branches site
+wpcloud-site-git-deploy tags site
+wpcloud-site-git-deploy commits site --limit 10
+```
+
+## Git Auth
+
+This tool runs as the site SSH user, so Git credentials live in that user’s `$HOME`, outside the HTTP request context.
+
+For SSH remotes, install a deploy key under `$HOME/.ssh/` and make sure `ssh -T git@github.com` works before deploying.
+
+For HTTPS remotes, use Git’s standard credential storage or an HTTPS URL/token mechanism appropriate for the site user. Do not place credentials in the repository being deployed.
+
+## Deploy Model
+
+Each deploy:
+
+1. Fetches or clones the repository under `$HOME/.wpcloud-site-git-deploy/repos/<name>/`.
+2. Resolves the requested branch, tag, commit, or configured default ref.
+3. Creates a clean worktree under `$HOME/.wpcloud-site-git-deploy/tmp/`.
+4. Prepares Git LFS files and submodules when present.
+5. Copies deployable files into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/incoming/<release-id>/`.
+6. Promotes that incoming tree to `releases/<release-id>/`.
+7. Reconciles public symlinks and atomically flips `current`.
+
+The previous release tree and public symlinks are used as deploy truth; no manifest is required.
+
+## Safety Rules
+
+- Public symlink targets must be relative.
+- Public symlink targets must resolve under the configured docroot.
+- Public symlink targets must not contain `$HOME`.
+- Root/group-owned non-writable anchors are protected from deploy claims.
+- Sticky root/group-owned writable directories act as dynamic boundaries, which keeps WordPress plugin/theme deployments from claiming too broad a path.
+- Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
+
+Default excludes include common Git and credential files such as `.git`, `.git/`, `.gitignore`, `.github/`, `.env`, `.aws/`, `.ssh/`, `.npmrc`, `.pypirc`, and `.netrc`.
+
+## Rollback
+
+```bash
+wpcloud-site-git-deploy rollback site
+wpcloud-site-git-deploy rollback site --to 20260613120000-abcdef123456-abcd
+```
+
+Rollback uses the same conservative symlink reconciliation path as deploy. It flips `current` back to an existing release and cleans only symlinks owned by that deployment.
+
+## Development
+
+```bash
+tests/run.sh
+```
+
+Linux CI exercises the real GNU tooling and static `renameat2(RENAME_EXCHANGE)` helper. macOS local tests use small shims for Linux-only command behavior.
