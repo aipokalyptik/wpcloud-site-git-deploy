@@ -36,16 +36,20 @@ trap 'rm -rf "$tmpdir"' EXIT
 fake_bin="$tmpdir/bin"
 source_repo="$tmpdir/source"
 home_dir="$tmpdir/home"
+plain_home_dir="$tmpdir/plain-home"
 docroot="$tmpdir/docroot"
-mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$docroot"
+plain_docroot="$tmpdir/plain-docroot"
+mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$plain_home_dir" "$docroot" "$plain_docroot"
 touch "$tmpdir/gitconfig"
 export GIT_CONFIG_GLOBAL="$tmpdir/gitconfig"
 system_git="$(command -v git)"
 git_log="$tmpdir/git.log"
+ssh_env_log="$tmpdir/ssh-env.log"
 
 cat >"$fake_bin/git" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s|%s\n' "\$*" "\${GIT_SSH_COMMAND:-}" >>"$ssh_env_log"
 if [[ "\${1:-}" == "-C" && "\${3:-}" == "gc" && "\${4:-}" == "--auto" ]]; then
   printf 'gc-auto %s\n' "\$2" >>"$git_log"
 fi
@@ -102,6 +106,23 @@ HOME="$home_dir" "$cli" init site \
   --docroot "$docroot" \
   --deployment-id site \
   --default-ref main >/dev/null
+
+HOME="$plain_home_dir" "$cli" init plain \
+  --repo "$source_repo" \
+  --docroot "$plain_docroot" \
+  --deployment-id plain \
+  --default-ref main >/dev/null
+HOME="$plain_home_dir" "$cli" branches plain >/dev/null
+plain_repo_cache="$plain_home_dir/.wpcloud-site-git-deploy/repos/plain"
+assert_contains "clone $source_repo $plain_repo_cache|" "$ssh_env_log"
+
+mkdir -p "$home_dir/.wpcloud-site-git-deploy/keys"
+printf 'PRIVATE KEY\n' >"$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
+printf 'ssh-ed25519 PUBLICKEY site\n' >"$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519.pub"
+chmod 600 "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
+{
+  printf 'ssh_key_path=%q\n' "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
+} >>"$home_dir/.wpcloud-site-git-deploy/deployments/site.env"
 
 first_deploy="$(HOME="$home_dir" "$cli" deploy site --tag v1)"
 first_release="${first_deploy%% *}"
@@ -174,6 +195,9 @@ assert_contains "v2" "$tmpdir/tags-fetched.txt"
 HOME="$home_dir" "$cli" commits site --fetch --limit 1 >"$tmpdir/commits-fetched.txt"
 assert_contains "$late_commit" "$tmpdir/commits-fetched.txt"
 assert_contains "gc-auto $repo_cache" "$git_log"
+assert_contains "clone $source_repo $repo_cache|ssh -i $home_dir/.wpcloud-site-git-deploy/keys/site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$ssh_env_log"
+assert_contains "-C $repo_cache fetch --tags --prune origin|ssh -i $home_dir/.wpcloud-site-git-deploy/keys/site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$ssh_env_log"
+assert_contains "submodule update --init --recursive|ssh -i $home_dir/.wpcloud-site-git-deploy/keys/site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$ssh_env_log"
 
 lfs_source_repo="$tmpdir/lfs-source"
 lfs_home_dir="$tmpdir/lfs-home"
@@ -183,6 +207,7 @@ mkdir -p "$lfs_source_repo" "$lfs_home_dir" "$lfs_docroot"
 cat >"$fake_bin/git-lfs" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'git-lfs %s GIT_SSH_COMMAND=%s\n' "$*" "${GIT_SSH_COMMAND:-}" >>"${WPCLOUD_TEST_LFS_LOG:?}"
 case "${1:-}" in
   install)
     exit 0
@@ -198,6 +223,7 @@ case "${1:-}" in
 esac
 SH
 chmod +x "$fake_bin/git-lfs"
+export WPCLOUD_TEST_LFS_LOG="$tmpdir/git-lfs.log"
 
 git -C "$lfs_source_repo" init -b main >/dev/null
 git -C "$lfs_source_repo" config user.name "WP Cloud Deploy Test"
@@ -220,6 +246,14 @@ HOME="$lfs_home_dir" "$cli" init lfs-site \
   --docroot "$lfs_docroot" \
   --deployment-id lfs-site \
   --default-ref main >/dev/null
+mkdir -p "$lfs_home_dir/.wpcloud-site-git-deploy/keys"
+printf 'PRIVATE KEY\n' >"$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
+printf 'ssh-ed25519 PUBLICKEY lfs\n' >"$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519.pub"
+chmod 600 "$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
+{
+  printf 'ssh_key_path=%q\n' "$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
+} >>"$lfs_home_dir/.wpcloud-site-git-deploy/deployments/lfs-site.env"
 HOME="$lfs_home_dir" "$cli" update lfs-site >/dev/null
 grep -Fx 'hydrated lfs content' "$lfs_docroot/media.bin" >/dev/null || fail "LFS file should be hydrated by git-lfs pull"
 grep -Fx 'version https://git-lfs.github.com/spec/v1' "$lfs_docroot/notes.txt" >/dev/null || fail "non-LFS pointer-shaped file should not fail deploy"
+assert_contains "git-lfs pull GIT_SSH_COMMAND=ssh -i $lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$tmpdir/git-lfs.log"

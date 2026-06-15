@@ -11,6 +11,7 @@ DEPLOYMENTS_DIR="$STATE_DIR/deployments"
 REPOS_DIR="$STATE_DIR/repos"
 TMP_DIR="$STATE_DIR/tmp"
 BIN_DIR="$STATE_DIR/bin"
+KEYS_DIR="$STATE_DIR/keys"
 HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 
 usage() {
@@ -27,6 +28,8 @@ Usage:
   wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy status <name>
+  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify]
+  wpcloud-site-git-deploy doctor <name> [--offline]
 USAGE
 }
 
@@ -77,10 +80,56 @@ load_config() {
   : "${deployment_id:?}"
   : "${default_ref:?}"
   keep_releases="${keep_releases:-$DEFAULT_KEEP_RELEASES}"
+  ssh_key_path="${ssh_key_path:-}"
 }
 
 ensure_state_dirs() {
-  mkdir -p "$DEPLOYMENTS_DIR" "$REPOS_DIR" "$TMP_DIR" "$BIN_DIR"
+  mkdir -p "$DEPLOYMENTS_DIR" "$REPOS_DIR" "$TMP_DIR" "$BIN_DIR" "$KEYS_DIR"
+}
+
+write_config() {
+  local name="$1"
+  local path
+
+  path="$(config_path "$name")"
+  {
+    write_config_value repo_url "$repo_url"
+    write_config_value docroot "$docroot"
+    write_config_value deployment_id "$deployment_id"
+    write_config_value default_ref "$default_ref"
+    write_config_value keep_releases "$keep_releases"
+    if [[ -n "${ssh_key_path:-}" ]]; then
+      write_config_value ssh_key_path "$ssh_key_path"
+    fi
+  } >"$path"
+  chmod 600 "$path"
+}
+
+git_ssh_command() {
+  local key_path="${ssh_key_path:-}"
+
+  [[ -n "$key_path" ]] || return 1
+  printf 'ssh -i %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new' "$key_path"
+}
+
+git_with_auth() {
+  local ssh_command
+
+  if ssh_command="$(git_ssh_command)"; then
+    GIT_SSH_COMMAND="$ssh_command" git "$@"
+  else
+    git "$@"
+  fi
+}
+
+git_lfs_with_auth() {
+  local ssh_command
+
+  if ssh_command="$(git_ssh_command)"; then
+    GIT_SSH_COMMAND="$ssh_command" git-lfs "$@"
+  else
+    git-lfs "$@"
+  fi
 }
 
 ensure_helper() {
@@ -162,7 +211,7 @@ ensure_repo_cache() {
     git -C "$repo_dir" remote set-url origin "$repo_url"
   else
     rm -rf "$repo_dir"
-    git clone "$repo_url" "$repo_dir"
+    git_with_auth clone "$repo_url" "$repo_dir"
   fi
 }
 
@@ -170,7 +219,7 @@ fetch_repo() {
   local name="$1"
 
   ensure_repo_cache "$name"
-  git -C "$(repo_dir_for "$name")" fetch --tags --prune origin
+  git_with_auth -C "$(repo_dir_for "$name")" fetch --tags --prune origin
   git -C "$(repo_dir_for "$name")" gc --auto
 }
 
@@ -200,7 +249,7 @@ prepare_git_features() {
   local lfs_pointer_paths="$TMP_DIR/git-lfs-pointers.$$.list"
 
   if [[ -f "$worktree/.gitmodules" ]]; then
-    git -C "$worktree" submodule update --init --recursive >&2
+    git_with_auth -C "$worktree" submodule update --init --recursive >&2
     if git -C "$worktree" submodule status --recursive | grep -Eq '^-'; then
       die "one or more submodules are uninitialized"
     fi
@@ -222,8 +271,8 @@ prepare_git_features() {
 
   if ((uses_lfs)); then
     command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
-    git -C "$worktree" lfs install --local >&2
-    git -C "$worktree" lfs pull >&2
+    (cd "$worktree" && git_lfs_with_auth install --local) >&2
+    (cd "$worktree" && git_lfs_with_auth pull) >&2
     : >"$lfs_pointer_paths"
     while IFS= read -r -d '' path; do
       if grep -Il '^version https://git-lfs.github.com/spec/v1$' -- "$worktree/$path" >/dev/null 2>&1; then
@@ -442,6 +491,235 @@ select_rollback_release() {
     xargs basename
 }
 
+repo_host_from_url() {
+  local url="$1"
+
+  if [[ "$url" =~ ^[^@:/]+@([^:/]+):.+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$url" =~ ^ssh://[^@]+@([^/]+)/.+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$url" =~ ^https://([^/]+)/.+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ -d "$url" || "$url" == /* || "$url" == ./* || "$url" == ../* ]]; then
+    printf 'local\n'
+    return 0
+  fi
+  return 1
+}
+
+github_https_to_ssh() {
+  local url="$1"
+  local path
+
+  [[ "$url" =~ ^https://github\.com/(.+)$ ]] || return 1
+  path="${BASH_REMATCH[1]}"
+  path="${path#/}"
+  [[ -n "$path" ]] || return 1
+  printf 'git@github.com:%s\n' "$path"
+}
+
+repo_url_supports_auth() {
+  local url="$1"
+
+  [[ "$url" =~ ^[^@:/]+@[^:/]+:.+$ || "$url" =~ ^ssh://[^@]+@[^/]+/.+$ || "$url" =~ ^https://github\.com/.+$ ]]
+}
+
+private_key_mode() {
+  local path="$1"
+
+  if stat -f '%Lp' "$path" >/dev/null 2>&1; then
+    stat -f '%Lp' "$path"
+  else
+    stat -c '%a' "$path"
+  fi
+}
+
+doctor_failures=0
+
+doctor_ok() {
+  printf 'OK %s: %s\n' "$1" "$2"
+}
+
+doctor_warn() {
+  printf 'WARN %s: %s\n' "$1" "$2"
+}
+
+doctor_fail() {
+  printf 'FAIL %s: %s\n' "$1" "$2"
+  doctor_failures=$((doctor_failures + 1))
+}
+
+cmd_auth() {
+  local name="${1:-}"
+  shift || true
+  local force_new_key=0
+  local verify=0
+  local key_path
+  local host
+  local public_key
+
+  require_name "$name"
+  while (($#)); do
+    case "$1" in
+      --force-new-key) force_new_key=1; shift ;;
+      --verify) verify=1; shift ;;
+      *) die "unknown auth argument: $1" ;;
+    esac
+  done
+
+  load_config "$name"
+  ensure_state_dirs
+  if [[ "$repo_url" =~ ^https:// && ! "$repo_url" =~ ^https://github\.com/ ]]; then
+    die "generic HTTPS repository URLs cannot be configured for deploy keys automatically; reinitialize or edit the repo URL to an SSH URL"
+  fi
+  if [[ "$repo_url" =~ ^https://github\.com/ ]]; then
+    repo_url="$(github_https_to_ssh "$repo_url")" || die "could not convert GitHub HTTPS URL to SSH"
+  fi
+  repo_url_supports_auth "$repo_url" || die "repository URL is not an SSH or GitHub HTTPS URL: $repo_url"
+
+  key_path="$KEYS_DIR/${name}_ed25519"
+  if ((force_new_key)); then
+    rm -f "$key_path" "$key_path.pub"
+  fi
+  if [[ -f "$key_path" ]]; then
+    printf 'Reusing existing deploy key: %s\n' "$key_path"
+  else
+    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
+    mkdir -p "$KEYS_DIR"
+    chmod 700 "$KEYS_DIR"
+    (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
+    chmod 600 "$key_path"
+    chmod 644 "$key_path.pub"
+    printf 'Created deploy key: %s\n' "$key_path"
+  fi
+
+  ssh_key_path="$key_path"
+  write_config "$name"
+  public_key="$(cat "$key_path.pub")"
+  host="$(repo_host_from_url "$repo_url" || true)"
+
+  if [[ "$host" == "github.com" ]]; then
+    printf 'Add this public key as a read-only GitHub deploy key for %s:\n' "$repo_url"
+  else
+    printf 'Add this public key to the repository host for %s with read-only access to %s:\n' "$host" "$repo_url"
+  fi
+  printf '%s\n' "$public_key"
+  printf 'After adding the key, run: wpcloud-site-git-deploy doctor %s\n' "$name"
+
+  if ((verify)); then
+    git_with_auth ls-remote "$repo_url" HEAD >/dev/null || die "remote access failed; add the public key to the repository and try again"
+    printf 'Verified remote access for %s\n' "$repo_url"
+  fi
+}
+
+cmd_doctor() {
+  local name="${1:-}"
+  shift || true
+  local offline=0
+  local command_name
+  local mode
+  local host
+  local repo_dir
+  local helper
+
+  require_name "$name"
+  while (($#)); do
+    case "$1" in
+      --offline) offline=1; shift ;;
+      *) die "unknown doctor argument: $1" ;;
+    esac
+  done
+
+  doctor_failures=0
+  if load_config "$name"; then
+    doctor_ok config "deployment loaded"
+  else
+    doctor_fail config "deployment is not initialized"
+    return 1
+  fi
+
+  for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      doctor_ok command "$command_name found"
+    else
+      doctor_fail command "$command_name is required"
+    fi
+  done
+
+  if [[ -d "$docroot" ]]; then
+    doctor_ok docroot "exists: $docroot"
+    if [[ -w "$docroot" ]]; then
+      doctor_ok docroot "writable: $docroot"
+    else
+      doctor_fail docroot "not writable: $docroot"
+    fi
+  else
+    doctor_fail docroot "does not exist: $docroot"
+  fi
+
+  if repo_host_from_url "$repo_url" >/dev/null 2>&1; then
+    host="$(repo_host_from_url "$repo_url")"
+    doctor_ok repo "recognized host: $host"
+  else
+    doctor_fail repo "could not parse repository URL: $repo_url"
+  fi
+
+  if helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
+    doctor_ok helper "exchange-rename available: $helper"
+  else
+    doctor_fail helper "exchange-rename helper is not available"
+  fi
+
+  if [[ -z "${ssh_key_path:-}" ]]; then
+    doctor_fail ssh-key "no deploy key configured; run wpcloud-site-git-deploy auth $name"
+  elif [[ ! -f "$ssh_key_path" ]]; then
+    doctor_fail ssh-key "private key is missing: $ssh_key_path"
+  elif [[ ! -r "$ssh_key_path" ]]; then
+    doctor_fail ssh-key "private key is not readable: $ssh_key_path"
+  else
+    mode="$(private_key_mode "$ssh_key_path")"
+    if ((10#$mode > 600)); then
+      doctor_fail ssh-key "private key permissions are too open: $mode"
+    else
+      doctor_ok ssh-key "private key is readable"
+    fi
+  fi
+  if [[ -n "${ssh_key_path:-}" ]]; then
+    if [[ -f "$ssh_key_path.pub" ]]; then
+      doctor_ok ssh-key "public key exists"
+    else
+      doctor_fail ssh-key "public key is missing: $ssh_key_path.pub"
+    fi
+  fi
+
+  repo_dir="$(repo_dir_for "$name")"
+  if [[ -d "$repo_dir/.git" ]] && git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
+    if command -v git-lfs >/dev/null 2>&1; then
+      doctor_ok git-lfs "available for cached LFS-tracked repository"
+    else
+      doctor_fail git-lfs "git-lfs is required for cached LFS-tracked repository"
+    fi
+  else
+    doctor_warn git-lfs "not checked; no cached LFS attributes found"
+  fi
+
+  if ((offline)); then
+    doctor_warn git-remote "skipped remote access check because --offline was provided"
+  elif git_with_auth ls-remote "$repo_url" HEAD >/dev/null 2>&1; then
+    doctor_ok git-remote "remote access succeeded"
+  else
+    doctor_fail git-remote "remote access failed; add the deploy key to the repository host or check repository access"
+  fi
+
+  ((doctor_failures == 0))
+}
+
 cmd_init() {
   local name="${1:-}"
   shift || true
@@ -450,7 +728,6 @@ cmd_init() {
   local init_deployment_id=""
   local init_default_ref=""
   local init_keep_releases="$DEFAULT_KEEP_RELEASES"
-  local path
 
   require_name "$name"
   while (($#)); do
@@ -473,15 +750,13 @@ cmd_init() {
 
   ensure_state_dirs
   ensure_helper >/dev/null
-  path="$(config_path "$name")"
-  {
-    write_config_value repo_url "$repo"
-    write_config_value docroot "$init_docroot"
-    write_config_value deployment_id "$init_deployment_id"
-    write_config_value default_ref "$init_default_ref"
-    write_config_value keep_releases "$init_keep_releases"
-  } >"$path"
-  chmod 600 "$path"
+  repo_url="$repo"
+  docroot="$init_docroot"
+  deployment_id="$init_deployment_id"
+  default_ref="$init_default_ref"
+  keep_releases="$init_keep_releases"
+  ssh_key_path=""
+  write_config "$name"
   printf 'initialized %s\n' "$name"
 }
 
@@ -1652,6 +1927,8 @@ main() {
     tags) cmd_tags "$@" ;;
     commits) cmd_commits "$@" ;;
     status) cmd_status "$@" ;;
+    auth) cmd_auth "$@" ;;
+    doctor) cmd_doctor "$@" ;;
     __remote-deploy) remote_deploy_entry "$@" ;;
     --help|-h|"") usage ;;
     --version) echo "$VERSION" ;;

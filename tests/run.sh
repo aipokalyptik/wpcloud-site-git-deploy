@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 "$repo_root/tests/test_cli_git_deploy.sh"
+"$repo_root/tests/test_auth_doctor.sh"
 "$repo_root/tests/test_remote_invariants.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then

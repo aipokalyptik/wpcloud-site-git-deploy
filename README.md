@@ -49,6 +49,7 @@ Installed runtime files:
 Runtime state created as you initialize and deploy sites:
 
 - `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`
+- `$HOME/.wpcloud-site-git-deploy/keys/<name>_ed25519`
 - `$HOME/.wpcloud-site-git-deploy/repos/<name>/`
 - `$HOME/.wpcloud-site-git-deploy/tmp/`
 
@@ -64,6 +65,10 @@ wpcloud-site-git-deploy init site \
   --docroot /srv/htdocs \
   --deployment-id site \
   --default-ref main
+
+wpcloud-site-git-deploy auth site
+# Add the printed public key to the repository as a read-only deploy key.
+wpcloud-site-git-deploy doctor site
 
 wpcloud-site-git-deploy deploy site --branch main
 wpcloud-site-git-deploy deploy site --tag v1.2.3
@@ -81,6 +86,7 @@ wpcloud-site-git-deploy branches site
 wpcloud-site-git-deploy tags site
 wpcloud-site-git-deploy commits site --limit 10
 wpcloud-site-git-deploy branches site --fetch
+wpcloud-site-git-deploy doctor site --offline
 ```
 
 Branch, tag, and commit inspection commands read from the local repository
@@ -94,12 +100,34 @@ Command output is script-friendly:
 - `rollback` prints `rolled back to <release-id>`.
 - `status` prints `name`, `repo`, `docroot`, `deployment_id`,
   `default_ref`, and `current` as `key=value` lines.
+- `doctor` prints `OK`, `WARN`, and `FAIL` lines and exits nonzero when any
+  required check fails.
 
 ## Git Auth
 
 This tool runs as the site SSH user, so Git credentials live in that user’s `$HOME`, outside the HTTP request context.
 
-For SSH remotes, install a deploy key under `$HOME/.ssh/` and make sure `ssh -T git@github.com` works before deploying.
+For SSH remotes, run:
+
+```bash
+wpcloud-site-git-deploy auth site
+```
+
+`auth` creates or reuses
+`$HOME/.wpcloud-site-git-deploy/keys/site_ed25519`, stores that path in the
+deployment config, and prints the public key to add to the repository host as a
+read-only deploy key. For GitHub HTTPS URLs, it converts the stored repository
+URL to the equivalent SSH URL before writing the key path.
+
+After adding the public key to the repository host, run:
+
+```bash
+wpcloud-site-git-deploy doctor site
+```
+
+The CLI does not edit `~/.ssh/config`. When `ssh_key_path` is configured, Git
+network operations run with a tool-managed `GIT_SSH_COMMAND` that pins the
+deployment to that key.
 
 For HTTPS remotes, use Git’s standard credential storage or an HTTPS URL/token mechanism appropriate for the site user. Do not place credentials in the repository being deployed.
 
@@ -134,6 +162,10 @@ The previous release tree and public symlinks are used as deploy truth; no manif
 Repository fetches run `git gc --auto` after a successful
 `fetch --tags --prune origin`. Deploy and update always fetch. Branch, tag, and
 commit inspection only fetch when `--fetch` is provided.
+
+When `ssh_key_path` is configured by `auth`, clone, fetch, Git LFS pull, and
+recursive submodule updates all use the configured deploy key through
+`GIT_SSH_COMMAND`.
 
 ## Safety Rules
 

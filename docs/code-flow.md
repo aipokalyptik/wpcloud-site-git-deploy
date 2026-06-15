@@ -16,6 +16,17 @@ flowchart TD
   I2 --> I3["ensure_helper: install exchange-rename if needed"]
   I3 --> I4["Write deployment config under $HOME/.wpcloud-site-git-deploy/deployments"]
 
+  C -->|auth| AU["cmd_auth"]
+  AU --> AU1["Load deployment config and normalize GitHub HTTPS URL to SSH"]
+  AU1 --> AU2["Create or reuse $HOME/.wpcloud-site-git-deploy/keys/<name>_ed25519"]
+  AU2 --> AU3["Store ssh_key_path in deployment config"]
+  AU3 --> AU4["Print public deploy key and host-specific instructions"]
+
+  C -->|doctor| DOC["cmd_doctor"]
+  DOC --> DOC1["Load config and check required local commands"]
+  DOC1 --> DOC2["Check docroot, exchange helper, repo URL, and deploy key files"]
+  DOC2 --> DOC3["Optionally run git ls-remote through configured GIT_SSH_COMMAND"]
+
   C -->|deploy| D["cmd_deploy"]
   D --> D1["Parse exactly one ref: --branch, --tag, or --commit"]
   D1 --> DR["deploy_ref"]
@@ -102,5 +113,6 @@ engine now lives inside `remote_deploy_entry()` and is reachable through the
 hidden `__remote-deploy` command for tests and internal promotion/rollback use.
 
 The production entry points are `init`, `deploy`, `update`, `rollback`,
-`releases`, `branches`, `tags`, `commits`, and `status`. The hidden command is
-documented here only so maintainers can follow the embedded code path.
+`releases`, `branches`, `tags`, `commits`, `status`, `auth`, and `doctor`. The
+hidden command is documented here only so maintainers can follow the embedded
+code path.
