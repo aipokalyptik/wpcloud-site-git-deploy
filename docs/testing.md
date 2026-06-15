@@ -73,9 +73,9 @@ Current live coverage should include:
   resolve under `/srv/htdocs`.
 
 The most recent full live matrix on this branch completed at
-`2026-06-15T23:12:43Z`. It covered the scenarios above against the throwaway
-WP Cloud/Pressable site after the CLI flattened its internal promotion engine
-structure.
+`2026-06-15T23:21:52Z`. It covered the scenarios above against the throwaway
+WP Cloud/Pressable site after the `.DS_Store` default exclude and release
+metadata key guard fixes.
 
 Expected failures in that run:
 
