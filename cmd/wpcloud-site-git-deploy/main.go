@@ -33,7 +33,6 @@ var (
 )
 
 type app struct {
-	exePath        string
 	stateDir       string
 	deploymentsDir string
 	reposDir       string
@@ -75,12 +74,7 @@ func newApp() (*app, error) {
 	if state == "" {
 		state = filepath.Join(home, ".wpcloud-site-git-deploy")
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
 	return &app{
-		exePath:        exe,
 		stateDir:       state,
 		deploymentsDir: filepath.Join(state, "deployments"),
 		reposDir:       filepath.Join(state, "repos"),
