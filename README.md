@@ -151,6 +151,26 @@ deployment config, and prints the public key to add to the repository host as a
 read-only deploy key. For GitHub HTTPS URLs, it converts the stored repository
 URL to the equivalent SSH URL before writing the key path.
 
+To use an existing private key in place, keep the file under your own control
+and point the deployment at it:
+
+```bash
+wpcloud-site-git-deploy auth site --use-key ~/.ssh/id_ed25519
+```
+
+To import an existing private key into the tool-managed key directory:
+
+```bash
+wpcloud-site-git-deploy auth site --import-key ~/.ssh/id_ed25519
+```
+
+Imported keys are copied to
+`$HOME/.wpcloud-site-git-deploy/keys/site_ed25519`, chmodded to `600`, and get
+a derived `.pub` file. If that managed key already exists, add
+`--force-new-key` to replace it. Both `--use-key` and `--import-key` require a
+readable owner-only private key that `ssh-keygen -y` can read without prompting;
+passphrase-protected keys are not supported for unattended deploys.
+
 After adding the public key to the repository host, run:
 
 ```bash
@@ -169,7 +189,8 @@ wpcloud-site-git-deploy auth site --remove
 
 That clears `ssh_key_path` from the deployment config and leaves key files in
 place. Add `--purge-key` to delete key files managed under
-`$HOME/.wpcloud-site-git-deploy/keys/`.
+`$HOME/.wpcloud-site-git-deploy/keys/`. External keys configured with
+`--use-key` are never deleted by `--purge-key`.
 
 For HTTPS remotes, use Git’s standard credential storage or an HTTPS URL/token mechanism appropriate for the site user. Do not place credentials in the repository being deployed.
 

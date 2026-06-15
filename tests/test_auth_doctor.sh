@@ -34,13 +34,22 @@ cat >"$fake_bin/ssh-keygen" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 out=""
+derive=0
 while (($#)); do
   case "$1" in
+    -y) derive=1; shift ;;
     -f) out="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 [[ -n "$out" ]] || exit 64
+if ((derive)); then
+  if grep -Eq 'INVALID|ENCRYPTED' "$out"; then
+    exit 255
+  fi
+  printf 'ssh-ed25519 DERIVED-%s wpcloud-test\n' "$(basename "$out")"
+  exit 0
+fi
 printf 'PRIVATE KEY\n' >"$out"
 printf 'ssh-ed25519 PUBLICKEY wpcloud-test\n' >"$out.pub"
 chmod 600 "$out"
@@ -116,7 +125,7 @@ assert_contains "Verified remote access for git@github.com:example/private-site.
 if HOME="$home_dir" "$cli" auth site --remove --verify >"$tmpdir/auth-remove-bad.txt" 2>&1; then
   fail "auth --remove --verify should fail"
 fi
-assert_contains "--remove cannot be combined with --verify or --force-new-key" "$tmpdir/auth-remove-bad.txt"
+assert_contains "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key" "$tmpdir/auth-remove-bad.txt"
 
 HOME="$home_dir" "$cli" auth site --remove >"$tmpdir/auth-remove.txt"
 assert_contains "Removed deploy key configuration for site" "$tmpdir/auth-remove.txt"
@@ -158,11 +167,79 @@ done
 chmod 600 "$key_path"
 
 rm -f "$key_path.pub"
-if HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-missing-pub.txt"; then
-  fail "doctor should fail when public key is missing"
-fi
-assert_contains "FAIL ssh-key: public key is missing" "$tmpdir/doctor-missing-pub.txt"
+HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-missing-pub.txt" || fail "doctor should accept a missing public key when it can derive one"
+assert_contains "OK ssh-key: public key can be derived" "$tmpdir/doctor-missing-pub.txt"
 printf 'ssh-ed25519 PUBLICKEY wpcloud-test\n' >"$key_path.pub"
+
+external_key="$tmpdir/external_ed25519"
+printf 'EXTERNAL PRIVATE KEY\n' >"$external_key"
+chmod 600 "$external_key"
+>"$tmpdir/git.log"
+HOME="$home_dir" "$cli" auth site --use-key "$external_key" --verify >"$tmpdir/auth-use-key.txt"
+assert_contains "ssh_key_path=$external_key" "$config_file"
+assert_contains "Using existing deploy key: $external_key" "$tmpdir/auth-use-key.txt"
+assert_contains "ssh-ed25519 DERIVED-external_ed25519 wpcloud-test" "$tmpdir/auth-use-key.txt"
+assert_contains "Verified remote access for git@github.com:example/private-site.git" "$tmpdir/auth-use-key.txt"
+assert_contains "GIT_SSH_COMMAND=ssh -i $external_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$tmpdir/git.log"
+HOME="$home_dir" "$cli" auth site --remove --purge-key >"$tmpdir/auth-remove-external.txt"
+assert_contains "Did not delete external key files: $external_key" "$tmpdir/auth-remove-external.txt"
+[[ -f "$external_key" ]] || fail "auth --remove --purge-key must not delete external --use-key files"
+
+import_source="$tmpdir/import_source_ed25519"
+printf 'IMPORTED PRIVATE KEY\n' >"$import_source"
+chmod 600 "$import_source"
+HOME="$home_dir" "$cli" auth site --import-key "$import_source" --force-new-key >"$tmpdir/auth-import-key.txt"
+assert_contains "Imported deploy key: $key_path" "$tmpdir/auth-import-key.txt"
+assert_contains "ssh_key_path=$key_path" "$config_file"
+assert_contains "ssh-ed25519 DERIVED-site_ed25519 wpcloud-test" "$tmpdir/auth-import-key.txt"
+[[ -f "$key_path" ]] || fail "auth --import-key should create managed private key"
+[[ -f "$key_path.pub" ]] || fail "auth --import-key should derive managed public key"
+[[ "$(cat "$key_path")" == "IMPORTED PRIVATE KEY" ]] || fail "auth --import-key should copy private key content"
+assert_contains "ssh-ed25519 DERIVED-site_ed25519 wpcloud-test" "$key_path.pub"
+imported_mode="$(stat -f '%Lp' "$key_path" 2>/dev/null || stat -c '%a' "$key_path")"
+[[ "$imported_mode" == "600" ]] || fail "imported key should be chmod 600, got $imported_mode"
+if HOME="$home_dir" "$cli" auth site --import-key "$import_source" >"$tmpdir/auth-import-overwrite.txt" 2>&1; then
+  fail "auth --import-key should not overwrite a managed key without --force-new-key"
+fi
+assert_contains "managed deploy key already exists" "$tmpdir/auth-import-overwrite.txt"
+printf 'REPLACEMENT PRIVATE KEY\n' >"$import_source"
+HOME="$home_dir" "$cli" auth site --import-key "$import_source" --force-new-key >"$tmpdir/auth-import-force.txt"
+[[ "$(cat "$key_path")" == "REPLACEMENT PRIVATE KEY" ]] || fail "auth --import-key --force-new-key should replace managed key"
+
+missing_key="$tmpdir/missing_ed25519"
+if HOME="$home_dir" "$cli" auth site --use-key "$missing_key" >"$tmpdir/auth-use-missing.txt" 2>&1; then
+  fail "auth --use-key should fail for a missing key"
+fi
+assert_contains "private key is missing" "$tmpdir/auth-use-missing.txt"
+unreadable_key="$tmpdir/unreadable_ed25519"
+printf 'UNREADABLE PRIVATE KEY\n' >"$unreadable_key"
+chmod 000 "$unreadable_key"
+if HOME="$home_dir" "$cli" auth site --use-key "$unreadable_key" >"$tmpdir/auth-use-unreadable.txt" 2>&1; then
+  fail "auth --use-key should fail for an unreadable key"
+fi
+assert_contains "private key is not readable" "$tmpdir/auth-use-unreadable.txt"
+chmod 600 "$unreadable_key"
+permissive_key="$tmpdir/permissive_ed25519"
+printf 'PERMISSIVE PRIVATE KEY\n' >"$permissive_key"
+chmod 644 "$permissive_key"
+if HOME="$home_dir" "$cli" auth site --use-key "$permissive_key" >"$tmpdir/auth-use-permissive.txt" 2>&1; then
+  fail "auth --use-key should fail for a permissive key"
+fi
+assert_contains "private key permissions are too open" "$tmpdir/auth-use-permissive.txt"
+invalid_key="$tmpdir/invalid_ed25519"
+printf 'INVALID PRIVATE KEY\n' >"$invalid_key"
+chmod 600 "$invalid_key"
+if HOME="$home_dir" "$cli" auth site --use-key "$invalid_key" >"$tmpdir/auth-use-invalid.txt" 2>&1; then
+  fail "auth --use-key should fail for an invalid key"
+fi
+assert_contains "private key cannot be used without prompting" "$tmpdir/auth-use-invalid.txt"
+encrypted_key="$tmpdir/encrypted_ed25519"
+printf 'ENCRYPTED PRIVATE KEY\n' >"$encrypted_key"
+chmod 600 "$encrypted_key"
+if HOME="$home_dir" "$cli" auth site --import-key "$encrypted_key" --force-new-key >"$tmpdir/auth-import-encrypted.txt" 2>&1; then
+  fail "auth --import-key should fail for a passphrase-protected key"
+fi
+assert_contains "private key cannot be used without prompting" "$tmpdir/auth-import-encrypted.txt"
 
 WPCLOUD_TEST_GIT_LS_REMOTE_STATUS=7 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-remote-fail.txt" && fail "doctor should fail when remote access fails"
 assert_contains "FAIL git-remote: remote access failed" "$tmpdir/doctor-remote-fail.txt"

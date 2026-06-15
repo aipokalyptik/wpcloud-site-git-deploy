@@ -21,9 +21,10 @@ flowchart TD
 
   C -->|auth| AU["cmd_auth"]
   AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize GitHub HTTPS URL to SSH"]
-  AU1 --> AU2["Create or reuse $HOME/.wpcloud-site-git-deploy/keys/<name>_ed25519"]
-  AU2 --> AU3["Store ssh_key_path in deployment config"]
-  AU3 --> AU4["Print public deploy key and host-specific instructions"]
+  AU1 --> AU2["Choose auth source: generate/reuse managed key, --use-key external key, or --import-key managed copy"]
+  AU2 --> AU3["Validate private key permissions and derive public key without prompting"]
+  AU3 --> AU4["Store ssh_key_path in deployment config"]
+  AU4 --> AU5["Print public deploy key and host-specific instructions"]
 
   C -->|doctor| DOC["cmd_doctor"]
   DOC --> DOC1["Load config and check required local commands"]

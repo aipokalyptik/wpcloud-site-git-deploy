@@ -36,8 +36,12 @@ trap 'rm -rf "$tmpdir"' EXIT
 "$cli" --help >"$tmpdir/help.txt"
 assert_contains "wpcloud-site-git-deploy deploys a Git repository" "$tmpdir/help.txt"
 assert_contains "[--keep-releases N]" "$tmpdir/help.txt"
+assert_contains "--use-key PATH" "$tmpdir/help.txt"
+assert_contains "--import-key PATH" "$tmpdir/help.txt"
 assert_contains "--help" "$tmpdir/help.txt"
 assert_contains "--version" "$tmpdir/help.txt"
+assert_contains "wpcloud-site-git-deploy auth site --use-key" "$repo_root/README.md"
+assert_contains "wpcloud-site-git-deploy auth site --import-key" "$repo_root/README.md"
 
 awk '
   /write_release_metadata\(\)/ { in_func=1 }

@@ -34,7 +34,7 @@ Usage:
   wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy status <name>
-  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--remove [--purge-key]]
+  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--use-key PATH | --import-key PATH | --remove [--purge-key]]
   wpcloud-site-git-deploy doctor <name> [--offline]
   wpcloud-site-git-deploy --help
   wpcloud-site-git-deploy --version
@@ -679,6 +679,33 @@ private_key_mode() {
   fi
 }
 
+private_key_public_key() {
+  local path="$1"
+
+  ssh-keygen -y -f "$path" </dev/null 2>/dev/null
+}
+
+validate_existing_private_key() {
+  local path="$1"
+  local mode
+
+  [[ -f "$path" ]] || die "private key is missing: $path"
+  [[ -r "$path" ]] || die "private key is not readable: $path"
+  mode="$(private_key_mode "$path")"
+  if (( (8#$mode) & 0077 )); then
+    die "private key permissions are too open: $mode"
+  fi
+  private_key_public_key "$path" >/dev/null || die "private key cannot be used without prompting or is not a valid private key: $path"
+}
+
+derive_public_key_file() {
+  local private_key="$1"
+  local public_key_path="$2"
+
+  private_key_public_key "$private_key" >"$public_key_path" || die "private key cannot be used without prompting or is not a valid private key: $private_key"
+  chmod 644 "$public_key_path"
+}
+
 doctor_failures=0
 
 doctor_ok() {
@@ -704,6 +731,8 @@ cmd_auth() {
   local remove=0
   local purge_key=0
   local key_path
+  local use_key=""
+  local import_key=""
   local host
   local public_key
 
@@ -714,6 +743,8 @@ cmd_auth() {
       --verify) verify=1; shift ;;
       --remove) remove=1; shift ;;
       --purge-key) purge_key=1; shift ;;
+      --use-key) use_key="${2:-}"; shift 2 ;;
+      --import-key) import_key="${2:-}"; shift 2 ;;
       *) die "unknown auth argument: $1" ;;
     esac
   done
@@ -722,8 +753,8 @@ cmd_auth() {
   ensure_state_dirs
 
   if ((remove)); then
-    if ((verify || force_new_key)); then
-      die "--remove cannot be combined with --verify or --force-new-key"
+    if ((verify || force_new_key)) || [[ -n "$use_key" || -n "$import_key" ]]; then
+      die "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key"
     fi
     key_path="${ssh_key_path:-}"
     ssh_key_path=""
@@ -745,6 +776,12 @@ cmd_auth() {
   if ((purge_key)); then
     die "--purge-key requires --remove"
   fi
+  if [[ -n "$use_key" && -n "$import_key" ]]; then
+    die "choose only one deploy key source"
+  fi
+  if [[ -n "$use_key" && "$force_new_key" -eq 1 ]]; then
+    die "--force-new-key can only be used with generated or imported keys"
+  fi
 
   if [[ "$repo_url" =~ ^https:// && ! "$repo_url" =~ ^https://github\.com/ ]]; then
     die "generic HTTPS repository URLs cannot be configured for deploy keys automatically; reinitialize or edit the repo URL to an SSH URL"
@@ -755,24 +792,55 @@ cmd_auth() {
   repo_url_supports_auth "$repo_url" || die "repository URL is not an SSH or GitHub HTTPS URL: $repo_url"
 
   key_path="$KEYS_DIR/${name}_ed25519"
-  if ((force_new_key)); then
+  if [[ -n "$use_key" ]]; then
+    validate_existing_private_key "$use_key"
+    key_path="$use_key"
+    public_key="$(private_key_public_key "$key_path")"
+    printf 'Using existing deploy key: %s\n' "$key_path"
+  elif [[ -n "$import_key" ]]; then
+    validate_existing_private_key "$import_key"
+    if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
+      die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
+    fi
     rm -f "$key_path" "$key_path.pub"
-  fi
-  if [[ -f "$key_path" ]]; then
-    printf 'Reusing existing deploy key: %s\n' "$key_path"
-  else
-    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
     mkdir -p "$KEYS_DIR"
     chmod 700 "$KEYS_DIR"
-    (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
+    cp "$import_key" "$key_path"
     chmod 600 "$key_path"
-    chmod 644 "$key_path.pub"
-    printf 'Created deploy key: %s\n' "$key_path"
+    derive_public_key_file "$key_path" "$key_path.pub"
+    public_key="$(cat "$key_path.pub")"
+    printf 'Imported deploy key: %s\n' "$key_path"
+  else
+    if ((force_new_key)); then
+      rm -f "$key_path" "$key_path.pub"
+    fi
+    if [[ -f "$key_path" ]]; then
+      printf 'Reusing existing deploy key: %s\n' "$key_path"
+    else
+      command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
+      mkdir -p "$KEYS_DIR"
+      chmod 700 "$KEYS_DIR"
+      (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
+      chmod 600 "$key_path"
+      chmod 644 "$key_path.pub"
+      printf 'Created deploy key: %s\n' "$key_path"
+    fi
+    validate_existing_private_key "$key_path"
+    if [[ -f "$key_path.pub" ]]; then
+      public_key="$(cat "$key_path.pub")"
+    else
+      derive_public_key_file "$key_path" "$key_path.pub"
+      public_key="$(cat "$key_path.pub")"
+    fi
+  fi
+
+  if [[ "$key_path" == "$KEYS_DIR"/* ]]; then
+    mkdir -p "$KEYS_DIR"
+    chmod 700 "$KEYS_DIR"
   fi
 
   ssh_key_path="$key_path"
   write_config "$name"
-  public_key="$(cat "$key_path.pub")"
   host="$(repo_host_from_url "$repo_url" || true)"
 
   if [[ "$host" == "github.com" ]]; then
@@ -859,13 +927,15 @@ cmd_doctor() {
       doctor_fail ssh-key "private key permissions are too open: $mode"
     else
       doctor_ok ssh-key "private key is readable"
-    fi
-  fi
-  if [[ -n "${ssh_key_path:-}" ]]; then
-    if [[ -f "$ssh_key_path.pub" ]]; then
-      doctor_ok ssh-key "public key exists"
-    else
-      doctor_fail ssh-key "public key is missing: $ssh_key_path.pub"
+      if private_key_public_key "$ssh_key_path" >/dev/null; then
+        if [[ -f "$ssh_key_path.pub" ]]; then
+          doctor_ok ssh-key "public key exists"
+        else
+          doctor_ok ssh-key "public key can be derived"
+        fi
+      else
+        doctor_fail ssh-key "private key cannot be used without prompting or is not a valid private key: $ssh_key_path"
+      fi
     fi
   fi
 
