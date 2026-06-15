@@ -23,8 +23,9 @@ On the site SSH user:
 - Git
 - `rsync`
 - GNU `find`
-- `flock`, `sort`, `comm`, `cut`, `grep`, `readlink`, `ln`, `mv`, `rm`,
-  `mkdir`, `mktemp`, and `touch`
+- `ssh-keygen` for `auth`
+- `flock`, `sort`, `comm`, `cut`, `grep`, `cat`, `readlink`, `ln`, `mv`,
+  `rm`, `mkdir`, `mktemp`, `touch`, and `stat`
 - Git LFS only when the deployed repository has LFS-tracked paths
 
 The committed helper binary is Linux amd64 and uses
@@ -64,10 +65,12 @@ wpcloud-site-git-deploy init site \
   --repo https://github.com/example/site-content.git \
   --docroot /srv/htdocs \
   --deployment-id site \
-  --default-ref main
+  --default-ref main \
+  --keep-releases 3
 
 wpcloud-site-git-deploy auth site
 # Add the printed public key to the repository as a read-only deploy key.
+# For GitHub HTTPS URLs, auth stores the equivalent SSH URL.
 wpcloud-site-git-deploy doctor site
 
 wpcloud-site-git-deploy deploy site --branch main
@@ -113,6 +116,11 @@ Branch, tag, and commit inspection commands read from the local repository
 cache by default. Add `--fetch` when you want those commands to refresh the
 cache from the remote before listing refs.
 
+`--keep-releases N` is configured during `init` and controls how many promoted
+release directories remain available for rollback after each successful deploy.
+It defaults to `3`. To change it later, edit the deployment config under
+`$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`.
+
 Command output is script-friendly:
 
 - `deploy` prints `<release-id> <ref-mode> <commit>`.
@@ -122,7 +130,8 @@ Command output is script-friendly:
   release.
 - `rollback` prints `rolled back to <release-id>`.
 - `status` prints `name`, `repo`, `docroot`, `deployment_id`,
-  `default_ref`, `deploy_root`, and `current` as `key=value` lines.
+  `default_ref`, `keep_releases`, `deploy_root`, and `current` as `key=value`
+  lines.
 - `doctor` prints `OK`, `WARN`, and `FAIL` lines and exits nonzero when any
   required check fails.
 

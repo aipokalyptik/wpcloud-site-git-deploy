@@ -203,3 +203,14 @@ if HOME="$missing_home" PATH="/usr/bin:/bin" "$cli" doctor missing --offline >"$
   fail "doctor should fail when auth has not configured an ssh key"
 fi
 assert_contains "FAIL ssh-key: no deploy key configured" "$tmpdir/doctor-missing.txt"
+
+no_keygen_bin="$tmpdir/no-keygen-bin"
+mkdir -p "$no_keygen_bin"
+for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp; do
+  command_path="$(command -v "$command_name")"
+  ln -s "$command_path" "$no_keygen_bin/$command_name"
+done
+if HOME="$home_dir" PATH="$no_keygen_bin" "$cli" doctor site --offline >"$tmpdir/doctor-no-ssh-keygen.txt"; then
+  fail "doctor should fail when ssh-keygen is missing"
+fi
+assert_contains "FAIL command: ssh-keygen is required" "$tmpdir/doctor-no-ssh-keygen.txt"

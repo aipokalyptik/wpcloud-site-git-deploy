@@ -72,7 +72,7 @@ Current live coverage should include:
 - Public symlink invariant audit: all owned public symlinks are relative and
   resolve under `/srv/htdocs`.
 
-The most recent full live matrix on this branch completed at
+Release `v1.0.8` was validated by a full live matrix completed at
 `2026-06-15T23:21:52Z`. It covered the scenarios above against the throwaway
 WP Cloud/Pressable site after the `.DS_Store` default exclude and release
 metadata key guard fixes.

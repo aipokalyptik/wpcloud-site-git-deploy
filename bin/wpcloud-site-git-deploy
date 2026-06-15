@@ -19,8 +19,10 @@ HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 
 usage() {
   cat <<'USAGE'
+wpcloud-site-git-deploy deploys a Git repository into a WP Cloud or Pressable docroot from the site SSH user.
+
 Usage:
-  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--deploy-root PATH]
+  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
   wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root]
   wpcloud-site-git-deploy deploy <name> --branch BRANCH
   wpcloud-site-git-deploy deploy <name> --tag TAG
@@ -34,6 +36,8 @@ Usage:
   wpcloud-site-git-deploy status <name>
   wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--remove [--purge-key]]
   wpcloud-site-git-deploy doctor <name> [--offline]
+  wpcloud-site-git-deploy --help
+  wpcloud-site-git-deploy --version
 USAGE
 }
 
@@ -811,7 +815,7 @@ cmd_doctor() {
     return 1
   fi
 
-  for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch; do
+  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat ssh-keygen; do
     if command -v "$command_name" >/dev/null 2>&1; then
       doctor_ok command "$command_name found"
     else
@@ -1125,6 +1129,7 @@ cmd_status() {
   printf 'docroot=%s\n' "$docroot"
   printf 'deployment_id=%s\n' "$deployment_id"
   printf 'default_ref=%s\n' "$default_ref"
+  printf 'keep_releases=%s\n' "$keep_releases"
   printf 'deploy_root=%s\n' "${deploy_root:-}"
   printf 'current=%s\n' "$(current_release_id || true)"
 }

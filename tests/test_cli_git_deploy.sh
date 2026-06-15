@@ -33,6 +33,12 @@ cli="$repo_root/bin/wpcloud-site-git-deploy"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+"$cli" --help >"$tmpdir/help.txt"
+assert_contains "wpcloud-site-git-deploy deploys a Git repository" "$tmpdir/help.txt"
+assert_contains "[--keep-releases N]" "$tmpdir/help.txt"
+assert_contains "--help" "$tmpdir/help.txt"
+assert_contains "--version" "$tmpdir/help.txt"
+
 awk '
   /write_release_metadata\(\)/ { in_func=1 }
   in_func && /\*\) die "unmapped release metadata key:/ { found=1 }
@@ -198,6 +204,7 @@ assert_contains "rollback release does not exist" "$tmpdir/rollback-missing.txt"
 assert_not_contains "rolled back to missing-release" "$tmpdir/rollback-missing.txt"
 HOME="$home_dir" "$cli" status site >"$tmpdir/status-after-failed-rollback.txt"
 assert_contains "name=site" "$tmpdir/status-after-failed-rollback.txt"
+assert_contains "keep_releases=3" "$tmpdir/status-after-failed-rollback.txt"
 
 HOME="$home_dir" "$cli" branches site >"$tmpdir/branches.txt"
 assert_contains "feature" "$tmpdir/branches.txt"
