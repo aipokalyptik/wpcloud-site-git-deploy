@@ -37,6 +37,19 @@ func TestValidateClaimsNotProtected(t *testing.T) {
 	}
 }
 
+func TestPathIsWritableUsesAccessSemantics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locked")
+	if err := os.WriteFile(path, []byte("locked"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if pathIsWritable(path) {
+		t.Fatal("expected read-only file to be reported non-writable")
+	}
+}
+
 func TestEnvConfigCompatibility(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "site.env")

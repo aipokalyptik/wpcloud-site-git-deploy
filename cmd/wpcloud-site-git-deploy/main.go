@@ -1331,13 +1331,18 @@ func discoverProtectedAnchors(docroot string) ([]string, error) {
 			return nil
 		}
 		st, ok := info.Sys().(*syscall.Stat_t)
-		if ok && (st.Uid == 0 || st.Gid == 0) && info.Mode().Perm()&0o222 == 0 {
+		if ok && (st.Uid == 0 || st.Gid == 0) && !pathIsWritable(path) {
 			rel, _ := filepath.Rel(docroot, path)
 			out = append(out, normalizePublicPath(filepath.ToSlash(rel)))
 		}
 		return nil
 	})
 	return unique(out), nil
+}
+
+func pathIsWritable(path string) bool {
+	const writeOK = 0x2
+	return syscall.Access(path, writeOK) == nil
 }
 
 func readPathOverride(path string) ([]string, error) {
