@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.0.7"
+readonly VERSION="1.0.8"
 readonly DEFAULT_KEEP_RELEASES="3"
-readonly RELEASE_METADATA_KEYS="release_id ref_mode ref_value commit deploy_root deployed_at"
+readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -229,7 +229,7 @@ default_exclude_file() {
 .npmrc
 .pypirc
 .netrc
-	.DS_Store
+.DS_Store
 EXCLUDES
 }
 
@@ -424,7 +424,7 @@ write_release_metadata() {
 
   mkdir -p "$metadata_dir"
   {
-    for key in $RELEASE_METADATA_KEYS; do
+    for key in "${RELEASE_METADATA_KEYS[@]}"; do
       case "$key" in
         release_id) value="$release_id" ;;
         ref_mode) value="$mode" ;;
@@ -432,6 +432,7 @@ write_release_metadata() {
         commit) value="$commit" ;;
         deploy_root) value="${deploy_root:-}" ;;
         deployed_at) value="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" ;;
+        *) die "unmapped release metadata key: $key" ;;
       esac
       write_config_value "$key" "$value"
     done
@@ -442,7 +443,7 @@ metadata_key_allowed() {
   local key="$1"
   local allowed
 
-  for allowed in $RELEASE_METADATA_KEYS; do
+  for allowed in "${RELEASE_METADATA_KEYS[@]}"; do
     [[ "$key" == "$allowed" ]] && return 0
   done
   return 1

@@ -221,7 +221,7 @@ incoming release, promoted release, metadata file, or pruning pass.
   `wpcloud-site-git-deploy __remote-deploy --assert-public-symlinks` for tests
   and diagnostics.
 
-Default excludes include common Git and credential files such as `.git`, `.git/`, `.gitignore`, `.gitattributes`, `.gitmodules`, `.github/`, `.env`, `.aws/`, `.ssh/`, `.npmrc`, `.pypirc`, and `.netrc`.
+Default excludes include common Git, credential, and local metadata files such as `.git`, `.git/`, `.gitignore`, `.gitattributes`, `.gitmodules`, `.github/`, `.env`, `.aws/`, `.ssh/`, `.npmrc`, `.pypirc`, `.netrc`, and `.DS_Store`.
 
 ## Rollback
 

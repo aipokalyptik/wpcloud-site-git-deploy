@@ -33,6 +33,12 @@ cli="$repo_root/bin/wpcloud-site-git-deploy"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+awk '
+  /write_release_metadata\(\)/ { in_func=1 }
+  in_func && /\*\) die "unmapped release metadata key:/ { found=1 }
+  in_func && /^}/ { exit found ? 0 : 1 }
+' "$cli" || fail "write_release_metadata should fail for unmapped release metadata keys"
+
 fake_bin="$tmpdir/bin"
 source_repo="$tmpdir/source"
 home_dir="$tmpdir/home"
@@ -86,6 +92,7 @@ git -C "$source_repo" config user.email "wpcloud-deploy-test@example.invalid"
 mkdir -p "$source_repo/assets"
 printf 'hello from main\n' >"$source_repo/index.html"
 printf 'asset v1\n' >"$source_repo/assets/app.txt"
+printf 'mac metadata\n' >"$source_repo/.DS_Store"
 printf 'repo bookkeeping\n' >"$source_repo/.gitignore"
 printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$source_repo/.gitattributes"
 printf '[submodule "vendor/example"]\n\tpath = vendor/example\n\turl = https://example.invalid/example.git\n' >"$source_repo/.gitmodules"
@@ -130,6 +137,7 @@ grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy 
 [[ ! -e "$docroot/.gitignore" ]] || fail ".gitignore should be excluded by default"
 [[ ! -e "$docroot/.gitattributes" ]] || fail ".gitattributes should be excluded by default"
 [[ ! -e "$docroot/.gitmodules" ]] || fail ".gitmodules should be excluded by default"
+[[ ! -e "$docroot/.DS_Store" ]] || fail ".DS_Store should be excluded by default"
 [[ -L "$docroot/app-link.txt" ]] || fail "repo symlink should be deployed through public claim"
 [[ -L "$docroot/index.html" ]] || fail "published index should be a symlink"
 index_target="$(readlink "$docroot/index.html")"
