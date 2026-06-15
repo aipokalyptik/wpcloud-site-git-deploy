@@ -135,6 +135,55 @@ assert_public_symlinks_under_docroot() {
   done
 }
 
+resolve_path() {
+  local path="$1"
+
+  if readlink -f "$path" >/dev/null 2>&1; then
+    readlink -f "$path"
+    return 0
+  fi
+
+  [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" == "1" ]] || die "readlink -f is required"
+  python3 - "$path" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+assert_claim_symlinks_under_docroot() {
+  local docroot="$1"
+  local claims_file="$2"
+  local docroot_real
+  local claim
+  local public_path
+  local target
+  local resolved
+  local home_value="${HOME:-}"
+
+  docroot_real="$(resolve_path "$docroot")" || die "docroot does not exist: $docroot"
+
+  while IFS= read -r claim || [[ -n "$claim" ]]; do
+    [[ -n "$claim" ]] || continue
+    public_path="$docroot/$claim"
+
+    [[ -L "$public_path" ]] || die "public claim is not a symlink: $claim"
+    target="$(readlink "$public_path")"
+
+    [[ "$target" != /* ]] || die "public symlink target is absolute: $claim"
+    if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
+      die "public symlink target contains HOME: $claim"
+    fi
+
+    resolved="$(resolve_path "$public_path")" || die "public symlink resolves outside docroot: $claim"
+    case "$resolved" in
+      "$docroot_real"/*) ;;
+      *) die "public symlink resolves outside docroot: $claim" ;;
+    esac
+  done <"$claims_file"
+}
+
 create_scratch_dir() {
   local base="$1"
 
@@ -754,7 +803,7 @@ apply_claim_transition() {
   # new release, so public requests never see old symlinks pointing into a
   # not-yet-current tree.
   cleanup_removed_claims "$docroot" "$deployment_id" "$removed_claims_file"
-  assert_public_symlinks_under_docroot "$docroot" "$deployment_id"
+  assert_claim_symlinks_under_docroot "$docroot" "$new_claims_file"
 }
 
 rollback_release() {

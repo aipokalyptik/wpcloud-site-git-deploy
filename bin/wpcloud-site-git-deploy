@@ -172,6 +172,7 @@ fetch_repo() {
 
   ensure_repo_cache "$name"
   git -C "$(repo_dir_for "$name")" fetch --tags --prune origin
+  git -C "$(repo_dir_for "$name")" gc --auto
 }
 
 resolve_ref() {

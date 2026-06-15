@@ -40,7 +40,17 @@ docroot="$tmpdir/docroot"
 mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$docroot"
 touch "$tmpdir/gitconfig"
 export GIT_CONFIG_GLOBAL="$tmpdir/gitconfig"
+system_git="$(command -v git)"
+git_log="$tmpdir/git.log"
 
+cat >"$fake_bin/git" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "-C" && "\${3:-}" == "gc" && "\${4:-}" == "--auto" ]]; then
+  printf 'gc-auto %s\n' "\$2" >>"$git_log"
+fi
+exec "$system_git" "\$@"
+SH
 cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -63,6 +73,7 @@ exec /bin/mv "$@"
 SH
 chmod +x "$fake_bin/flock"
 chmod +x "$fake_bin/mv"
+chmod +x "$fake_bin/git"
 export PATH="$fake_bin:$PATH"
 
 git -C "$source_repo" init -b main >/dev/null
@@ -162,6 +173,7 @@ HOME="$home_dir" "$cli" tags site --fetch >"$tmpdir/tags-fetched.txt"
 assert_contains "v2" "$tmpdir/tags-fetched.txt"
 HOME="$home_dir" "$cli" commits site --fetch --limit 1 >"$tmpdir/commits-fetched.txt"
 assert_contains "$late_commit" "$tmpdir/commits-fetched.txt"
+assert_contains "gc-auto $repo_cache" "$git_log"
 
 lfs_source_repo="$tmpdir/lfs-source"
 lfs_home_dir="$tmpdir/lfs-home"
