@@ -18,7 +18,6 @@ Installed runtime files:
 
 - `$HOME/.wpcloud-site-git-deploy/bin/wpcloud-site-git-deploy`
 - `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
-- `$HOME/.wpcloud-site-git-deploy/lib/remote-deploy.sh`
 - `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`
 - `$HOME/.wpcloud-site-git-deploy/repos/<name>/`
 - `$HOME/.wpcloud-site-git-deploy/tmp/`

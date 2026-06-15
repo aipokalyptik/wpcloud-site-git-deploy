@@ -7,7 +7,7 @@ fail() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-remote="$repo_root/lib/remote-deploy.sh"
+remote=("$repo_root/bin/wpcloud-site-git-deploy" __remote-deploy)
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -74,7 +74,7 @@ export GITHUB_SSH_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
 export GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
 
 printf 'ok\n' >"$incoming/index.html"
-"$remote" --docroot "$docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+"${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
 docroot_scans="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
 [[ "$docroot_scans" == "1" ]] || fail "deploy should scan docroot symlinks only for materialized claims, got $docroot_scans scans"
 
@@ -93,7 +93,7 @@ esac
 bad="$docroot/bad-link"
 ln -s "$home_like/file" "$bad"
 scan_count_before_audit="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
-if "$remote" --docroot "$docroot" --deployment-id site --assert-public-symlinks >/dev/null 2>"$tmpdir/bad.log"; then
+if "${remote[@]}" --docroot "$docroot" --deployment-id site --assert-public-symlinks >/dev/null 2>"$tmpdir/bad.log"; then
   fail "assert-public-symlinks should reject HOME symlink"
 fi
 scan_count_after_audit="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
@@ -115,7 +115,7 @@ assert_corrupt_claim_fails() {
   : >"$find_log"
 
   if HOME="$home_like" WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$corrupt_docroot" WPCLOUD_SITE_GIT_DEPLOY_CORRUPT_LINK_TARGET="$corrupt_target" \
-    "$remote" --docroot "$corrupt_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/$name.log"; then
+    "${remote[@]}" --docroot "$corrupt_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/$name.log"; then
     fail "scoped assertion should reject $name target"
   fi
 
