@@ -74,8 +74,8 @@ Current live coverage should include:
 
 The most recent full live matrix on this branch completed at
 `2026-06-15T19:39:05Z`. It covered the scenarios above against the throwaway
-WP Cloud/Pressable site after the remote deploy engine was folded into the CLI
-and after the LFS attribute scan stopped using process substitution.
+WP Cloud/Pressable site after the CLI used an internal promotion engine and
+after the LFS attribute scan stopped using process substitution.
 
 Expected failures in that run:
 

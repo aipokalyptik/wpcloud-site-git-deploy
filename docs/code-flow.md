@@ -1,7 +1,7 @@
 # `bin/wpcloud-site-git-deploy` Code Flow
 
-This diagram covers the current `main` branch layout. The project is a Bash CLI
-with an embedded remote deployment engine. `__remote-deploy` is hidden from the
+This diagram covers the current `main` branch layout. The project is one Bash
+CLI with an internal promotion engine. `__remote-deploy` is hidden from the
 public help output because it is for tests, promotion, rollback, and diagnostic
 audits, not for day-to-day operator use.
 
@@ -56,7 +56,7 @@ flowchart TD
   DR7 --> DR8["rsync worktree or deploy_root subdir to docroot incoming release, using --link-dest when possible"]
   DR8 --> PR["promote_release"]
 
-  PR --> RDE["remote_deploy_entry --release-id"]
+  PR --> RDE["run_engine_subshell -> cmd_remote_deploy --release-id"]
   RDE --> RC["require_remote_capabilities"]
   RC --> LOCK["Acquire deploy lock"]
   LOCK --> PCT["prepare_claim_transition"]
@@ -85,7 +85,7 @@ flowchart TD
   RB1 --> RB2["current_release_id"]
   RB2 --> RB3{"--to provided?"}
   RB3 -->|no| RB4["select_rollback_release from metadata-backed releases"]
-  RB3 -->|yes| RBR["remote_deploy_entry --rollback-to"]
+  RB3 -->|yes| RBR["run_engine_subshell -> cmd_remote_deploy --rollback-to"]
   RB4 --> RBR
   RBR --> RBR1["rollback_release"]
   RBR1 --> LOCK
@@ -108,14 +108,17 @@ flowchart TD
   ST1 --> ST2["Print config and current release"]
 
   C -->|__remote-deploy| H["Hidden test/internal command"]
-  H --> RDE
+  H --> CRD["cmd_remote_deploy"]
+  CRD --> RC
 
   C -->|--help / --version| HV["Print usage/version"]
 ```
 
-The public commands stay in the top-level CLI. The former remote deployment
-engine now lives inside `remote_deploy_entry()` and is reachable through the
-hidden `__remote-deploy` command for tests and internal promotion/rollback use.
+The public commands and hidden diagnostic/internal command share the same final
+dispatcher. Promotion and rollback call the internal engine through
+`run_engine_subshell` so engine exits remain contained and caller cleanup paths
+stay live. The hidden `__remote-deploy` command calls `cmd_remote_deploy`
+directly for tests and audits.
 
 The production entry points are `init`, `config`, `deploy`, `update`,
 `rollback`, `releases`, `branches`, `tags`, `commits`, `status`, `auth`, and

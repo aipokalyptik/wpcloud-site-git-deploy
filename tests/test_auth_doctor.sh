@@ -75,7 +75,7 @@ export PATH="$fake_bin:$PATH"
 export WPCLOUD_TEST_GIT_LOG="$tmpdir/git.log"
 export WPCLOUD_TEST_SSH_LOG="$tmpdir/ssh.log"
 
-[[ "$("$cli" --version)" == "1.0.6" ]] || fail "--version should report current release line"
+[[ "$("$cli" --version)" == "1.0.7" ]] || fail "--version should report current release line"
 
 HOME="$home_dir" "$cli" init site \
   --repo https://github.com/example/private-site.git \
