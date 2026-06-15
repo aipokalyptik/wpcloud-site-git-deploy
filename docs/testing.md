@@ -73,9 +73,9 @@ Current live coverage should include:
   resolve under `/srv/htdocs`.
 
 The most recent full live matrix on this branch completed at
-`2026-06-15T19:39:05Z`. It covered the scenarios above against the throwaway
-WP Cloud/Pressable site after the CLI used an internal promotion engine and
-after the LFS attribute scan stopped using process substitution.
+`2026-06-15T23:12:43Z`. It covered the scenarios above against the throwaway
+WP Cloud/Pressable site after the CLI flattened its internal promotion engine
+structure.
 
 Expected failures in that run:
 
