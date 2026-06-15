@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="0.1.0"
+readonly VERSION="1.0.6"
 readonly DEFAULT_KEEP_RELEASES="3"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -313,7 +313,7 @@ prepare_git_features() {
     fi
     rm -f "$lfs_pointer_paths"
   fi
-  rm -f "$lfs_paths_list" "$attrs_list"
+  rm -f "$lfs_paths_list"
 }
 
 make_release_id() {
@@ -422,16 +422,38 @@ write_release_metadata() {
   } >"$metadata_file"
 }
 
+metadata_unquote() {
+  local value="$1"
+  local output=""
+  local char
+
+  if [[ "$value" == "''" ]]; then
+    printf '\n'
+    return 0
+  fi
+
+  while [[ -n "$value" ]]; do
+    char="${value:0:1}"
+    value="${value:1}"
+    if [[ "$char" == "\\" && -n "$value" ]]; then
+      char="${value:0:1}"
+      value="${value:1}"
+    fi
+    output+="$char"
+  done
+  printf '%s\n' "$output"
+}
+
 metadata_value() {
   local metadata_file="$1"
   local key="$2"
+  local line
+  local value
 
-  (
-    set +u
-    # shellcheck disable=SC1090
-    source "$metadata_file"
-    printf '%s\n' "${!key:-}"
-  )
+  [[ "$key" =~ ^(release_id|ref_mode|ref_value|commit|deploy_root|deployed_at)$ ]] || return 1
+  line="$(grep -m 1 -E "^${key}=" "$metadata_file" 2>/dev/null)" || return 0
+  value="${line#*=}"
+  metadata_unquote "$value"
 }
 
 current_release_metadata_file() {
@@ -480,13 +502,15 @@ promote_release() {
   local release_id="$1"
   local helper="$2"
 
-  remote_deploy_env
-  remote_deploy_entry \
+  (
+    remote_deploy_env
+    remote_deploy_entry \
     --docroot "$docroot" \
     --deployment-id "$deployment_id" \
     --release-id "$release_id" \
     --keep-releases "$keep_releases" \
     --exchange-helper "$helper"
+  )
 }
 
 deploy_ref() {
@@ -794,7 +818,7 @@ cmd_doctor() {
     doctor_fail ssh-key "private key is not readable: $ssh_key_path"
   else
     mode="$(private_key_mode "$ssh_key_path")"
-    if ((10#$mode > 600)); then
+    if (( (8#$mode) & 0077 )); then
       doctor_fail ssh-key "private key permissions are too open: $mode"
     else
       doctor_ok ssh-key "private key is readable"
@@ -816,7 +840,7 @@ cmd_doctor() {
       doctor_fail git-lfs "git-lfs is required for cached LFS-tracked repository"
     fi
   else
-    doctor_warn git-lfs "not checked; no cached LFS attributes found"
+    doctor_warn git-lfs "not checked; no root .gitattributes LFS marker found in cached HEAD"
   fi
 
   if ((offline)); then
@@ -956,8 +980,10 @@ cmd_rollback() {
     to="$(select_rollback_release "$current")"
   fi
   [[ -n "$to" ]] || die "no rollback release available"
-  remote_deploy_env
-  remote_deploy_entry --docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --exchange-helper "$helper"
+  (
+    remote_deploy_env
+    remote_deploy_entry --docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --exchange-helper "$helper"
+  )
   printf 'rolled back to %s\n' "$to"
 }
 
@@ -967,6 +993,10 @@ cmd_releases() {
   local current
   local release
   local metadata
+  local commit
+  local ref_mode
+  local ref_value
+  local deploy_root
 
   load_config "$name"
   base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
@@ -977,9 +1007,10 @@ cmd_releases() {
     printf '%s' "${release##*/}"
     [[ "${release##*/}" == "$current" ]] && printf ' current'
     if [[ -f "$metadata" ]]; then
-      deploy_root=""
-      # shellcheck disable=SC1090
-      source "$metadata"
+      commit="$(metadata_value "$metadata" commit)"
+      ref_mode="$(metadata_value "$metadata" ref_mode)"
+      ref_value="$(metadata_value "$metadata" ref_value)"
+      deploy_root="$(metadata_value "$metadata" deploy_root)"
       printf ' %s %s' "${commit:-unknown}" "${ref_mode:-unknown}:${ref_value:-unknown}"
       if [[ -n "${deploy_root:-}" ]]; then
         printf ' deploy-root:%s' "$deploy_root"
@@ -1074,7 +1105,7 @@ remote_deploy_entry() {
 # shipping a second Bash runtime file.
 
 
-usage() {
+rd_usage() {
   cat <<'USAGE'
 Usage: wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --release-id ID --keep-releases N [--exchange-helper PATH] [--post-deploy-file PATH] [--print-claims]
        wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --rollback-to RELEASE_ID [--exchange-helper PATH]
@@ -1103,7 +1134,7 @@ Options:
 USAGE
 }
 
-die() {
+rd_die() {
   echo "wpcloud-site-git-deploy __remote-deploy: $*" >&2
   exit 64
 }
@@ -1115,11 +1146,11 @@ trim() {
   printf '%s' "$value"
 }
 
-require_id() {
+rd_require_id() {
   local name="$1"
   local value="$2"
 
-  [[ "$value" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "$name must be a normalized id"
+  [[ "$value" =~ ^[a-z0-9][a-z0-9-]*$ ]] || rd_die "$name must be a normalized id"
 }
 
 RUN_SCRATCH_DIR=""
@@ -1135,26 +1166,26 @@ require_remote_capabilities() {
   local probe_dir
 
   for command_name in readlink flock find sort comm cut grep cat ln rm mv mkdir mktemp touch; do
-    command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
+    command -v "$command_name" >/dev/null 2>&1 || rd_die "$command_name is required"
   done
 
   # Later pruning depends on GNU find's timestamp output, and sticky/protected
   # discovery uses GNU-style predicates. Probing -printf is the cheap proxy for
   # GNU find as a whole.
   if [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" != "1" ]]; then
-    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || die "mktemp is required"
+    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || rd_die "mktemp is required"
     if ! find "$probe_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >/dev/null 2>&1; then
       rm -rf -- "$probe_dir"
-      die "GNU find with -printf is required"
+      rd_die "GNU find with -printf is required"
     fi
   else
-    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || die "mktemp is required"
+    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || rd_die "mktemp is required"
   fi
 
   : >"$probe_dir/source"
   if ! mv -T "$probe_dir/source" "$probe_dir/dest" 2>/dev/null; then
     rm -rf -- "$probe_dir"
-    die "atomic replacement requires mv -T"
+    rd_die "atomic replacement requires mv -T"
   fi
   rm -rf -- "$probe_dir"
 }
@@ -1173,7 +1204,7 @@ assert_public_symlinks_under_docroot() {
   local resolved
   local home_value="${HOME:-}"
 
-  docroot_real="$(cd "$docroot" && pwd -P)" || die "docroot does not exist: $docroot"
+  docroot_real="$(cd "$docroot" && pwd -P)" || rd_die "docroot does not exist: $docroot"
 
   # Public symlinks must be usable by HTTP. On WP Cloud, $HOME exists in SSH
   # sessions but is not mounted for web requests, so any target outside docroot
@@ -1188,20 +1219,20 @@ assert_public_symlinks_under_docroot() {
       fi
     fi
 
-    [[ "$target" != /* ]] || die "public symlink target is absolute: ${link_path#"$docroot"/}"
+    [[ "$target" != /* ]] || rd_die "public symlink target is absolute: ${link_path#"$docroot"/}"
     if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
-      die "public symlink target contains HOME: ${link_path#"$docroot"/}"
+      rd_die "public symlink target contains HOME: ${link_path#"$docroot"/}"
     fi
 
-    parent_real="$(cd "$(dirname "$link_path")" && pwd -P)" || die "could not resolve public symlink parent: ${link_path#"$docroot"/}"
+    parent_real="$(cd "$(dirname "$link_path")" && pwd -P)" || rd_die "could not resolve public symlink parent: ${link_path#"$docroot"/}"
     target_dir="$(dirname "$target")"
     target_base="$(basename "$target")"
-    resolved_dir="$(cd "$parent_real/$target_dir" 2>/dev/null && pwd -P)" || die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
+    resolved_dir="$(cd "$parent_real/$target_dir" 2>/dev/null && pwd -P)" || rd_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
     resolved="$resolved_dir/$target_base"
 
     case "$resolved" in
       "$docroot_real"/*) ;;
-      *) die "public symlink resolves outside docroot: ${link_path#"$docroot"/}" ;;
+      *) rd_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}" ;;
     esac
   done
 }
@@ -1214,7 +1245,7 @@ resolve_path() {
     return 0
   fi
 
-  [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" == "1" ]] || die "readlink -f is required"
+  [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" == "1" ]] || rd_die "readlink -f is required"
   python3 - "$path" <<'PY'
 import os
 import sys
@@ -1233,24 +1264,24 @@ assert_claim_symlinks_under_docroot() {
   local resolved
   local home_value="${HOME:-}"
 
-  docroot_real="$(resolve_path "$docroot")" || die "docroot does not exist: $docroot"
+  docroot_real="$(resolve_path "$docroot")" || rd_die "docroot does not exist: $docroot"
 
   while IFS= read -r claim || [[ -n "$claim" ]]; do
     [[ -n "$claim" ]] || continue
     public_path="$docroot/$claim"
 
-    [[ -L "$public_path" ]] || die "public claim is not a symlink: $claim"
+    [[ -L "$public_path" ]] || rd_die "public claim is not a symlink: $claim"
     target="$(readlink "$public_path")"
 
-    [[ "$target" != /* ]] || die "public symlink target is absolute: $claim"
+    [[ "$target" != /* ]] || rd_die "public symlink target is absolute: $claim"
     if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
-      die "public symlink target contains HOME: $claim"
+      rd_die "public symlink target contains HOME: $claim"
     fi
 
-    resolved="$(resolve_path "$public_path")" || die "public symlink resolves outside docroot: $claim"
+    resolved="$(resolve_path "$public_path")" || rd_die "public symlink resolves outside docroot: $claim"
     case "$resolved" in
       "$docroot_real"/*) ;;
-      *) die "public symlink resolves outside docroot: $claim" ;;
+      *) rd_die "public symlink resolves outside docroot: $claim" ;;
     esac
   done <"$claims_file"
 }
@@ -1259,7 +1290,7 @@ create_scratch_dir() {
   local base="$1"
 
   cleanup_run_scratch
-  RUN_SCRATCH_DIR="$(mktemp -d "$base/.tmp.XXXXXX")" || die "could not create scratch directory under $base"
+  RUN_SCRATCH_DIR="$(mktemp -d "$base/.tmp.XXXXXX")" || rd_die "could not create scratch directory under $base"
   printf '%s\n' "$RUN_SCRATCH_DIR"
 }
 
@@ -1289,7 +1320,7 @@ switch_current() {
   fi
 
   rm -f "$tmp_current"
-  die "atomic current replacement requires mv -T"
+  rd_die "atomic current replacement requires mv -T"
 }
 
 acquire_lock() {
@@ -1332,7 +1363,7 @@ run_post_deploy() {
   local post_deploy_file="$2"
 
   [[ -n "$post_deploy_file" ]] || return 0
-  [[ -f "$post_deploy_file" ]] || die "post-deploy file does not exist: $post_deploy_file"
+  [[ -f "$post_deploy_file" ]] || rd_die "post-deploy file does not exist: $post_deploy_file"
 
   (cd "$docroot" && bash -e "$post_deploy_file")
 }
@@ -1392,13 +1423,13 @@ reconcile_new_claims() {
       continue
     fi
 
-    [[ -x "$exchange_helper" ]] || die "exchange helper is required to reclaim existing path: $claim"
+    [[ -x "$exchange_helper" ]] || rd_die "exchange helper is required to reclaim existing path: $claim"
     # Existing public paths may contain real files/directories. Swap in the
     # deploy symlink atomically, then defer deletion of the exchanged-away path
     # until current points at the new release.
     if ! "$exchange_helper" "$tmp_link" "$public_path"; then
       rm -f -- "$tmp_link"
-      die "exchange helper failed to reclaim path: $claim"
+      rd_die "exchange helper failed to reclaim path: $claim"
     fi
     printf '%s\n' "$tmp_link" >>"$exchanged_paths_file"
   done <"$claims_file"
@@ -1453,7 +1484,7 @@ reject_foreign_deployment_claim() {
 
   target="$(readlink "$public_path")"
   if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-    die "claim owned by another deployment: $claim"
+    rd_die "claim owned by another deployment: $claim"
   fi
 }
 
@@ -1477,7 +1508,7 @@ reject_foreign_deployment_ancestor_claim() {
     if [[ -L "$ancestor" ]]; then
       target="$(readlink "$ancestor")"
       if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-        die "claim owned by another deployment: $claim"
+        rd_die "claim owned by another deployment: $claim"
       fi
     fi
   done
@@ -1499,7 +1530,7 @@ reject_foreign_deployment_descendant_claim() {
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
     if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-      die "claim contains another deployment: $claim"
+      rd_die "claim contains another deployment: $claim"
     fi
   done
 }
@@ -1582,7 +1613,7 @@ discover_materialized_public_claims() {
 
     if [[ "$claim" == *$'\n'* ]]; then
       rm -f -- "$claims_tmp"
-      die "unsupported newline in public symlink path"
+      rd_die "unsupported newline in public symlink path"
     fi
 
     target="$(readlink "$link_path")"
@@ -1651,7 +1682,7 @@ discover_docroot_paths() {
   local normalized
 
   if [[ -n "$override_file" ]]; then
-    [[ -f "$override_file" ]] || die "$label override file does not exist: $override_file"
+    [[ -f "$override_file" ]] || rd_die "$label override file does not exist: $override_file"
     while IFS= read -r path || [[ -n "$path" ]]; do
       normalized="$(normalize_public_path "$path")"
       printf '%s\n' "$normalized"
@@ -1717,7 +1748,7 @@ validate_claims_not_protected() {
         fi
       done <"$ancestor_pairs_file"
     )"
-    die "protected path: $blocked_claim"
+    rd_die "protected path: $blocked_claim"
   fi
 }
 
@@ -1794,7 +1825,7 @@ compute_claims() {
 
     if [[ "$public_path" == *$'\n'* ]]; then
       rm -f -- "$claims_tmp" "$sorted_tmp"
-      die "unsupported newline in release path"
+      rd_die "unsupported newline in release path"
     fi
 
     case "$public_path" in
@@ -1867,7 +1898,7 @@ apply_claim_transition() {
   cleanup_overlapping_removed_claims "$docroot" "$deployment_id" "$removed_claims_file" "$new_claims_file"
   reconcile_new_claims "$docroot" "$deployment_id" "$new_claims_file" "$exchange_helper" "$exchanged_paths_file"
   switch_current "$base" "$release_id"
-  [[ "$(readlink "$base/current")" == "releases/$release_id" ]] || die "current does not point to releases/$release_id"
+  [[ "$(readlink "$base/current")" == "releases/$release_id" ]] || rd_die "current does not point to releases/$release_id"
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   # Non-overlapping removed claims are cleaned only after current points at the
@@ -1894,7 +1925,7 @@ rollback_release() {
 
   acquire_lock "$lock_file"
 
-  [[ -d "$release_dir" ]] || die "rollback release does not exist: $release_dir"
+  [[ -d "$release_dir" ]] || rd_die "rollback release does not exist: $release_dir"
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
@@ -1906,7 +1937,7 @@ rollback_release() {
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$rollback_to" >&2
 }
 
-main() {
+rd_main() {
   local docroot=""
   local deployment_id=""
   local release_id=""
@@ -1920,7 +1951,7 @@ main() {
   while (($#)); do
     case "$1" in
       --help|-h)
-        usage
+        rd_usage
         exit 0
         ;;
       --version)
@@ -1928,37 +1959,37 @@ main() {
         exit 0
         ;;
       --docroot)
-        (($# >= 2)) || die "--docroot requires a value"
+        (($# >= 2)) || rd_die "--docroot requires a value"
         docroot="$2"
         shift 2
         ;;
       --deployment-id)
-        (($# >= 2)) || die "--deployment-id requires a value"
+        (($# >= 2)) || rd_die "--deployment-id requires a value"
         deployment_id="$2"
         shift 2
         ;;
       --release-id)
-        (($# >= 2)) || die "--release-id requires a value"
+        (($# >= 2)) || rd_die "--release-id requires a value"
         release_id="$2"
         shift 2
         ;;
       --rollback-to)
-        (($# >= 2)) || die "--rollback-to requires a value"
+        (($# >= 2)) || rd_die "--rollback-to requires a value"
         rollback_to="$2"
         shift 2
         ;;
       --keep-releases)
-        (($# >= 2)) || die "--keep-releases requires a value"
+        (($# >= 2)) || rd_die "--keep-releases requires a value"
         keep_releases="$2"
         shift 2
         ;;
       --post-deploy-file)
-        (($# >= 2)) || die "--post-deploy-file requires a value"
+        (($# >= 2)) || rd_die "--post-deploy-file requires a value"
         post_deploy_file="$2"
         shift 2
         ;;
       --exchange-helper)
-        (($# >= 2)) || die "--exchange-helper requires a value"
+        (($# >= 2)) || rd_die "--exchange-helper requires a value"
         exchange_helper="$2"
         shift 2
         ;;
@@ -1971,7 +2002,7 @@ main() {
         shift
         ;;
       *)
-        die "unknown argument: $1"
+        rd_die "unknown argument: $1"
         ;;
     esac
   done
@@ -1984,7 +2015,7 @@ main() {
   post_deploy_file="$(trim "$post_deploy_file")"
   exchange_helper="$(trim "$exchange_helper")"
 
-  [[ -n "$docroot" ]] || die "docroot is required"
+  [[ -n "$docroot" ]] || rd_die "docroot is required"
 
   if ((assert_public_symlinks)); then
     trap cleanup_run_scratch EXIT
@@ -1993,7 +2024,7 @@ main() {
     return
   fi
 
-  require_id "deployment-id" "$deployment_id"
+  rd_require_id "deployment-id" "$deployment_id"
   if [[ -z "$exchange_helper" ]]; then
     exchange_helper="$docroot/.github-ssh-deploy/deployments/$deployment_id/exchange-rename"
   fi
@@ -2002,22 +2033,22 @@ main() {
   require_remote_capabilities
 
   if [[ -n "$rollback_to" ]]; then
-    [[ -z "$release_id" ]] || die "--release-id cannot be used with --rollback-to"
+    [[ -z "$release_id" ]] || rd_die "--release-id cannot be used with --rollback-to"
     if [[ -n "$keep_releases" ]]; then
       if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || ((10#$keep_releases < 1)); then
-        die "keep-releases must be a positive integer"
+        rd_die "keep-releases must be a positive integer"
       fi
     fi
-    [[ -z "$post_deploy_file" ]] || die "--post-deploy-file cannot be used with --rollback-to"
-    ((print_claims == 0)) || die "--print-claims cannot be used with --rollback-to"
-    require_id "rollback-to" "$rollback_to"
+    [[ -z "$post_deploy_file" ]] || rd_die "--post-deploy-file cannot be used with --rollback-to"
+    ((print_claims == 0)) || rd_die "--print-claims cannot be used with --rollback-to"
+    rd_require_id "rollback-to" "$rollback_to"
     rollback_release "$docroot" "$deployment_id" "$rollback_to" "$exchange_helper"
     return
   fi
 
-  require_id "release-id" "$release_id"
+  rd_require_id "release-id" "$release_id"
   if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || ((10#$keep_releases < 1)); then
-    die "keep-releases must be a positive integer"
+    rd_die "keep-releases must be a positive integer"
   fi
 
   local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
@@ -2035,7 +2066,7 @@ main() {
 
   acquire_lock "$lock_file"
 
-  [[ -d "$incoming_release" ]] || die "incoming release does not exist: $incoming_release"
+  [[ -d "$incoming_release" ]] || rd_die "incoming release does not exist: $incoming_release"
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
@@ -2051,7 +2082,7 @@ main() {
     exit 0
   fi
 
-  [[ ! -e "$release_dir" ]] || die "release already exists: $release_dir"
+  [[ ! -e "$release_dir" ]] || rd_die "release already exists: $release_dir"
 
   prepare_claim_transition "$docroot" "$deployment_id" "$base" "$incoming_release" "$scratch_dir"
   mv "$incoming_release" "$release_dir"
@@ -2065,8 +2096,9 @@ main() {
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$release_id" >&2
 }
 
-main "$@"
+rd_main "$@"
 }
+
 main() {
   local command="${1:-}"
   shift || true

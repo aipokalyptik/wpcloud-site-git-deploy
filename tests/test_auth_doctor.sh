@@ -75,6 +75,8 @@ export PATH="$fake_bin:$PATH"
 export WPCLOUD_TEST_GIT_LOG="$tmpdir/git.log"
 export WPCLOUD_TEST_SSH_LOG="$tmpdir/ssh.log"
 
+[[ "$("$cli" --version)" == "1.0.6" ]] || fail "--version should report current release line"
+
 HOME="$home_dir" "$cli" init site \
   --repo https://github.com/example/private-site.git \
   --docroot "$docroot" \
@@ -141,6 +143,18 @@ if HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-bad-key.txt"; 
   fail "doctor should fail for permissive private key"
 fi
 assert_contains "FAIL ssh-key: private key permissions are too open" "$tmpdir/doctor-bad-key.txt"
+for allowed_mode in 400 600 700; do
+  chmod "$allowed_mode" "$key_path"
+  HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-key-$allowed_mode.txt" || fail "doctor should pass for owner-only private key mode $allowed_mode"
+  assert_contains "OK ssh-key: private key is readable" "$tmpdir/doctor-key-$allowed_mode.txt"
+done
+for bad_mode in 640 644 660 666; do
+  chmod "$bad_mode" "$key_path"
+  if HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-key-$bad_mode.txt"; then
+    fail "doctor should fail for private key mode $bad_mode"
+  fi
+  assert_contains "FAIL ssh-key: private key permissions are too open" "$tmpdir/doctor-key-$bad_mode.txt"
+done
 chmod 600 "$key_path"
 
 rm -f "$key_path.pub"

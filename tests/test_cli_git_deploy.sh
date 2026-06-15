@@ -136,6 +136,27 @@ index_target="$(readlink "$docroot/index.html")"
 [[ "$index_target" == .github-ssh-deploy/deployments/site/current/index.html ]] || fail "unexpected public symlink target: $index_target"
 assert_not_contains "$home_dir" <(printf '%s\n' "$index_target")
 
+conflict_home_dir="$tmpdir/conflict-home"
+mkdir -p "$conflict_home_dir"
+HOME="$conflict_home_dir" "$cli" init conflict \
+  --repo "$source_repo" \
+  --docroot "$docroot" \
+  --deployment-id conflict \
+  --default-ref main >/dev/null
+if HOME="$conflict_home_dir" "$cli" deploy conflict --tag v1 >"$tmpdir/conflict-deploy.txt" 2>&1; then
+  fail "foreign-claim promotion should fail"
+fi
+assert_contains "claim owned by another deployment:" "$tmpdir/conflict-deploy.txt"
+[[ ! -d "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict" ]] || fail "failed promotion should remove temp worktree"
+if [[ -d "$docroot/.github-ssh-deploy/deployments/conflict/incoming" ]]; then
+  conflict_incoming_count="$(find "$docroot/.github-ssh-deploy/deployments/conflict/incoming" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  [[ "$conflict_incoming_count" == "0" ]] || fail "failed promotion should remove incoming release"
+fi
+conflict_repo_cache="$conflict_home_dir/.wpcloud-site-git-deploy/repos/conflict"
+if git -C "$conflict_repo_cache" worktree list --porcelain | grep -Fq "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict/"; then
+  fail "failed promotion should remove temp worktree from git registry"
+fi
+
 second_deploy="$(HOME="$home_dir" "$cli" deploy site --branch feature)"
 second_release="${second_deploy%% *}"
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "branch deploy did not publish feature content"
@@ -162,6 +183,13 @@ assert_contains "$feature_commit" "$tmpdir/releases.txt"
 
 HOME="$home_dir" "$cli" rollback site >/dev/null
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "rollback did not restore prior release"
+if HOME="$home_dir" "$cli" rollback site --to missing-release >"$tmpdir/rollback-missing.txt" 2>&1; then
+  fail "rollback to missing release should fail"
+fi
+assert_contains "rollback release does not exist" "$tmpdir/rollback-missing.txt"
+assert_not_contains "rolled back to missing-release" "$tmpdir/rollback-missing.txt"
+HOME="$home_dir" "$cli" status site >"$tmpdir/status-after-failed-rollback.txt"
+assert_contains "name=site" "$tmpdir/status-after-failed-rollback.txt"
 
 HOME="$home_dir" "$cli" branches site >"$tmpdir/branches.txt"
 assert_contains "feature" "$tmpdir/branches.txt"
@@ -210,6 +238,22 @@ case "$noop_output" in
   "no-op $late_release branch $late_commit") ;;
   *) fail "unexpected no-op output: $noop_output" ;;
 esac
+
+metadata_file="$docroot/.github-ssh-deploy/deployments/site/metadata/$late_release.env"
+tamper_marker="$tmpdir/metadata-executed"
+{
+  printf 'commit=%q\n' "$late_commit"
+  printf 'ref_mode=branch\n'
+  printf 'ref_value=main\n'
+  printf 'deploy_root=\n'
+  printf 'touch %q\n' "$tamper_marker"
+} >"$metadata_file"
+HOME="$home_dir" "$cli" update site >"$tmpdir/noop-tampered.txt"
+assert_contains "no-op $late_release branch $late_commit" "$tmpdir/noop-tampered.txt"
+[[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from no-op path"
+HOME="$home_dir" "$cli" releases site >"$tmpdir/releases-tampered.txt"
+assert_contains "$late_commit branch:main" "$tmpdir/releases-tampered.txt"
+[[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from releases path"
 
 root_source_repo="$tmpdir/root-source"
 root_home_dir="$tmpdir/root-home"

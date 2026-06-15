@@ -198,7 +198,10 @@ commit inspection only fetch when `--fetch` is provided.
 
 When `ssh_key_path` is configured by `auth`, clone, fetch, Git LFS pull, and
 recursive submodule updates all use the configured deploy key through
-`GIT_SSH_COMMAND`.
+`GIT_SSH_COMMAND`. The generated SSH command uses
+`StrictHostKeyChecking=accept-new`, so the first connection to a Git host uses
+trust-on-first-use host-key acceptance instead of requiring users to edit
+`~/.ssh/config`.
 
 After fetching and resolving the requested ref, deploy and update compare the
 resolved commit plus configured deploy root to the active release metadata. If

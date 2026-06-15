@@ -42,7 +42,7 @@ flowchart TD
   DR1 --> DR2["ensure_state_dirs and ensure_helper"]
   DR2 --> DR3["fetch_repo: clone/cache, fetch tags/prune, git gc --auto"]
   DR3 --> DR4["resolve_ref to commit"]
-  DR4 --> NR{"Current metadata commit + deploy_root match?"}
+  DR4 --> NR{"Non-executing metadata read: commit + deploy_root match?"}
   NR -->|yes| NRO["Print no-op release_id ref_mode commit"]
   NR -->|no| DR5["make_release_id"]
   DR5 --> DR6["create_worktree via git worktree add --detach"]
