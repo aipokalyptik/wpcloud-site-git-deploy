@@ -20,6 +20,14 @@ assert_not_contains() {
   fi
 }
 
+inode_of() {
+  if stat -f '%i' "$1" >/dev/null 2>&1; then
+    stat -f '%i' "$1"
+  else
+    stat -c '%i' "$1"
+  fi
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="$repo_root/bin/wpcloud-site-git-deploy"
 tmpdir="$(mktemp -d)"
@@ -30,6 +38,8 @@ source_repo="$tmpdir/source"
 home_dir="$tmpdir/home"
 docroot="$tmpdir/docroot"
 mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$docroot"
+touch "$tmpdir/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmpdir/gitconfig"
 
 cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
@@ -82,7 +92,8 @@ HOME="$home_dir" "$cli" init site \
   --deployment-id site \
   --default-ref main >/dev/null
 
-HOME="$home_dir" "$cli" deploy site --tag v1 >/dev/null
+first_deploy="$(HOME="$home_dir" "$cli" deploy site --tag v1)"
+first_release="${first_deploy%% *}"
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy did not publish v1 content"
 [[ ! -e "$docroot/.gitignore" ]] || fail ".gitignore should be excluded by default"
 [[ ! -e "$docroot/.gitattributes" ]] || fail ".gitattributes should be excluded by default"
@@ -93,14 +104,26 @@ index_target="$(readlink "$docroot/index.html")"
 [[ "$index_target" == .github-ssh-deploy/deployments/site/current/index.html ]] || fail "unexpected public symlink target: $index_target"
 assert_not_contains "$home_dir" <(printf '%s\n' "$index_target")
 
-HOME="$home_dir" "$cli" deploy site --branch feature >/dev/null
+second_deploy="$(HOME="$home_dir" "$cli" deploy site --branch feature)"
+second_release="${second_deploy%% *}"
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "branch deploy did not publish feature content"
+first_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/assets/app.txt"
+second_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/assets/app.txt"
+[[ "$(inode_of "$first_asset")" == "$(inode_of "$second_asset")" ]] || fail "unchanged asset should be hardlinked across releases"
+first_index="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/index.html"
+second_index="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/index.html"
+[[ "$(inode_of "$first_index")" != "$(inode_of "$second_index")" ]] || fail "changed file should not be hardlinked across releases"
 
 HOME="$home_dir" "$cli" deploy site --commit "$main_commit" >/dev/null
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "commit deploy did not publish main commit content"
 
 HOME="$home_dir" "$cli" update site >/dev/null
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "update did not deploy latest default ref"
+repo_cache="$home_dir/.wpcloud-site-git-deploy/repos/site"
+if git -C "$repo_cache" worktree list --porcelain | grep -Fq "$home_dir/.wpcloud-site-git-deploy/tmp/site/"; then
+  fail "deploy worktree should be removed from git worktree registry"
+fi
+[[ ! -d "$home_dir/.wpcloud-site-git-deploy/tmp/site" ]] || fail "deploy worktree temp directory should be cleaned up"
 
 HOME="$home_dir" "$cli" releases site >"$tmpdir/releases.txt"
 assert_contains "$feature_commit" "$tmpdir/releases.txt"
@@ -116,3 +139,75 @@ assert_contains "v1" "$tmpdir/tags.txt"
 
 HOME="$home_dir" "$cli" commits site --limit 2 >"$tmpdir/commits.txt"
 assert_contains "$feature_commit" "$tmpdir/commits.txt"
+
+printf 'hello from late main\n' >"$source_repo/index.html"
+git -C "$source_repo" add index.html
+git -C "$source_repo" commit -m "late main content" >/dev/null
+late_commit="$(git -C "$source_repo" rev-parse HEAD)"
+git -C "$source_repo" branch late-branch "$late_commit"
+git -C "$source_repo" tag v2 "$late_commit"
+
+HOME="$home_dir" "$cli" branches site >"$tmpdir/branches-cached.txt"
+assert_not_contains "late-branch" "$tmpdir/branches-cached.txt"
+
+HOME="$home_dir" "$cli" tags site >"$tmpdir/tags-cached.txt"
+assert_not_contains "v2" "$tmpdir/tags-cached.txt"
+
+HOME="$home_dir" "$cli" commits site --limit 1 >"$tmpdir/commits-cached.txt"
+assert_not_contains "$late_commit" "$tmpdir/commits-cached.txt"
+
+HOME="$home_dir" "$cli" branches site --fetch >"$tmpdir/branches-fetched.txt"
+assert_contains "late-branch" "$tmpdir/branches-fetched.txt"
+HOME="$home_dir" "$cli" tags site --fetch >"$tmpdir/tags-fetched.txt"
+assert_contains "v2" "$tmpdir/tags-fetched.txt"
+HOME="$home_dir" "$cli" commits site --fetch --limit 1 >"$tmpdir/commits-fetched.txt"
+assert_contains "$late_commit" "$tmpdir/commits-fetched.txt"
+
+lfs_source_repo="$tmpdir/lfs-source"
+lfs_home_dir="$tmpdir/lfs-home"
+lfs_docroot="$tmpdir/lfs-docroot"
+mkdir -p "$lfs_source_repo" "$lfs_home_dir" "$lfs_docroot"
+
+cat >"$fake_bin/git-lfs" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  install)
+    exit 0
+    ;;
+  pull)
+    printf 'hydrated lfs content\n' >media.bin
+    exit 0
+    ;;
+  *)
+    echo "unexpected git-lfs command: $*" >&2
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$fake_bin/git-lfs"
+
+git -C "$lfs_source_repo" init -b main >/dev/null
+git -C "$lfs_source_repo" config user.name "WP Cloud Deploy Test"
+git -C "$lfs_source_repo" config user.email "wpcloud-deploy-test@example.invalid"
+printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$lfs_source_repo/.gitattributes"
+{
+  printf 'version https://git-lfs.github.com/spec/v1\n'
+  printf 'oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+  printf 'size 1\n'
+} >"$lfs_source_repo/media.bin"
+{
+  printf 'version https://git-lfs.github.com/spec/v1\n'
+  printf 'this normal text file intentionally looks like an LFS pointer header\n'
+} >"$lfs_source_repo/notes.txt"
+git -C "$lfs_source_repo" add .
+git -C "$lfs_source_repo" commit -m "lfs fixture" >/dev/null
+
+HOME="$lfs_home_dir" "$cli" init lfs-site \
+  --repo "$lfs_source_repo" \
+  --docroot "$lfs_docroot" \
+  --deployment-id lfs-site \
+  --default-ref main >/dev/null
+HOME="$lfs_home_dir" "$cli" update lfs-site >/dev/null
+grep -Fx 'hydrated lfs content' "$lfs_docroot/media.bin" >/dev/null || fail "LFS file should be hydrated by git-lfs pull"
+grep -Fx 'version https://git-lfs.github.com/spec/v1' "$lfs_docroot/notes.txt" >/dev/null || fail "non-LFS pointer-shaped file should not fail deploy"

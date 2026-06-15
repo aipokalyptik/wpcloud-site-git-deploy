@@ -47,7 +47,12 @@ wpcloud-site-git-deploy releases site
 wpcloud-site-git-deploy branches site
 wpcloud-site-git-deploy tags site
 wpcloud-site-git-deploy commits site --limit 10
+wpcloud-site-git-deploy branches site --fetch
 ```
+
+Branch, tag, and commit inspection commands read from the local repository
+cache by default. Add `--fetch` when you want those commands to refresh the
+cache from the remote before listing refs.
 
 ## Git Auth
 

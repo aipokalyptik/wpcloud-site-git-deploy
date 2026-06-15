@@ -24,9 +24,9 @@ Usage:
   wpcloud-site-git-deploy update <name>
   wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
   wpcloud-site-git-deploy releases <name>
-  wpcloud-site-git-deploy branches <name> [--limit N]
-  wpcloud-site-git-deploy tags <name> [--limit N]
-  wpcloud-site-git-deploy commits <name> [--limit N]
+  wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]
+  wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
+  wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy status <name>
 USAGE
 }
@@ -154,19 +154,24 @@ repo_dir_for() {
   printf '%s/%s\n' "$REPOS_DIR" "$name"
 }
 
-ensure_repo() {
+ensure_repo_cache() {
   local name="$1"
   local repo_dir
 
   repo_dir="$(repo_dir_for "$name")"
   if [[ -d "$repo_dir/.git" ]]; then
     git -C "$repo_dir" remote set-url origin "$repo_url"
-    git -C "$repo_dir" fetch --tags --prune origin
   else
     rm -rf "$repo_dir"
     git clone "$repo_url" "$repo_dir"
-    git -C "$repo_dir" fetch --tags --prune origin
   fi
+}
+
+fetch_repo() {
+  local name="$1"
+
+  ensure_repo_cache "$name"
+  git -C "$(repo_dir_for "$name")" fetch --tags --prune origin
 }
 
 resolve_ref() {
@@ -190,6 +195,8 @@ prepare_git_features() {
   local attr
   local uses_lfs=0
   local files_list="$TMP_DIR/git-files.$$.list"
+  local lfs_paths_list="$TMP_DIR/git-lfs-paths.$$.list"
+  local lfs_pointer_paths="$TMP_DIR/git-lfs-pointers.$$.list"
 
   if [[ -f "$worktree/.gitmodules" ]]; then
     git -C "$worktree" submodule update --init --recursive >&2
@@ -202,23 +209,31 @@ prepare_git_features() {
   # valid text files from Git's perspective. Detect LFS attributes and pull real
   # objects before copying into the docroot release tree.
   git -C "$worktree" ls-files -z >"$files_list"
-  while IFS= read -r -d '' path; do
-    attr="$(git -C "$worktree" check-attr filter -- "$path" 2>/dev/null || true)"
-    if [[ "$attr" == *": filter: lfs" ]]; then
+  : >"$lfs_paths_list"
+  while IFS= read -r -d '' path && IFS= read -r -d '' _ && IFS= read -r -d '' attr; do
+    if [[ "$attr" == "lfs" ]]; then
       uses_lfs=1
-      break
+      printf '%s\0' "$path" >>"$lfs_paths_list"
     fi
-  done <"$files_list"
+  done < <(git -C "$worktree" check-attr filter --stdin -z <"$files_list")
   rm -f "$files_list"
 
   if ((uses_lfs)); then
     command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
     git -C "$worktree" lfs install --local >&2
     git -C "$worktree" lfs pull >&2
-    if grep -RIl '^version https://git-lfs.github.com/spec/v1$' "$worktree" >/dev/null 2>&1; then
+    : >"$lfs_pointer_paths"
+    while IFS= read -r -d '' path; do
+      if grep -Il '^version https://git-lfs.github.com/spec/v1$' -- "$worktree/$path" >/dev/null 2>&1; then
+        printf '%s\n' "$path" >>"$lfs_pointer_paths"
+      fi
+    done <"$lfs_paths_list"
+    if [[ -s "$lfs_pointer_paths" ]]; then
       die "Git LFS pointer files remain after git lfs pull"
     fi
+    rm -f "$lfs_pointer_paths"
   fi
+  rm -f "$lfs_paths_list"
 }
 
 make_release_id() {
@@ -241,27 +256,61 @@ create_worktree() {
   rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
   mkdir -p "$(dirname "$worktree")"
 
-  # Clone Git objects from the local cache for speed, then point origin back at
-  # the configured repository URL. Git LFS and submodule prep may need objects
-  # that are not present in the cache, so their network fetches must not use the
-  # local file:// clone as the upstream.
-  git clone --no-checkout "$repo_dir" "$worktree"
-  git -C "$worktree" remote set-url origin "$repo_url"
-  git -C "$worktree" checkout --detach "$commit"
-  prepare_git_features "$worktree"
+  git -C "$repo_dir" worktree prune
+  git -C "$repo_dir" worktree add --detach "$worktree" "$commit" >&2
+  if ! prepare_git_features "$worktree"; then
+    cleanup_worktree_path "$repo_dir" "$worktree"
+    rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
+    rmdir "$TMP_DIR/$name" 2>/dev/null || true
+    return 1
+  fi
   printf '%s\n' "$worktree"
+}
+
+cleanup_worktree() {
+  local name="$1"
+  local worktree="$2"
+  local release_id="$3"
+  local repo_dir
+
+  repo_dir="$(repo_dir_for "$name")"
+  cleanup_worktree_path "$repo_dir" "$worktree"
+  rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
+  rmdir "$TMP_DIR/$name" 2>/dev/null || true
+}
+
+cleanup_worktree_path() {
+  local repo_dir="$1"
+  local worktree="$2"
+
+  git -C "$repo_dir" worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
+  git -C "$repo_dir" worktree prune
 }
 
 copy_worktree_to_incoming() {
   local worktree="$1"
   local release_id="$2"
+  local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
   local incoming="$docroot/.github-ssh-deploy/deployments/$deployment_id/incoming/$release_id"
   local exclude_file="$TMP_DIR/excludes.$$.txt"
+  local current_release=""
+  local link_dest=""
+  local rsync_args=()
 
   rm -rf "$incoming"
   mkdir -p "$incoming"
   default_exclude_file "$exclude_file"
-  rsync -a --delete --exclude-from="$exclude_file" "$worktree/" "$incoming/"
+
+  current_release="$(current_release_id || true)"
+  if [[ -n "$current_release" && -d "$base/releases/$current_release" ]]; then
+    link_dest="$base/releases/$current_release"
+  fi
+
+  rsync_args=(-a --delete --exclude-from="$exclude_file")
+  if [[ -n "$link_dest" ]]; then
+    rsync_args+=(--checksum --link-dest="$link_dest")
+  fi
+  rsync "${rsync_args[@]}" "$worktree/" "$incoming/"
   rm -f "$exclude_file"
 }
 
@@ -325,14 +374,23 @@ deploy_ref() {
   load_config "$name"
   ensure_state_dirs
   helper="$(ensure_helper)"
-  ensure_repo "$name"
+  fetch_repo "$name"
   commit="$(resolve_ref "$name" "$mode" "$value")"
   release_id="$(make_release_id "$commit")"
   worktree="$(create_worktree "$name" "$commit" "$release_id")"
-  copy_worktree_to_incoming "$worktree" "$release_id"
-  promote_release "$release_id" "$helper"
-  write_release_metadata "$release_id" "$mode" "$value" "$commit"
-  rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
+  if ! copy_worktree_to_incoming "$worktree" "$release_id"; then
+    cleanup_worktree "$name" "$worktree" "$release_id"
+    return 1
+  fi
+  if ! promote_release "$release_id" "$helper"; then
+    cleanup_worktree "$name" "$worktree" "$release_id"
+    return 1
+  fi
+  if ! write_release_metadata "$release_id" "$mode" "$value" "$commit"; then
+    cleanup_worktree "$name" "$worktree" "$release_id"
+    return 1
+  fi
+  cleanup_worktree "$name" "$worktree" "$release_id"
   printf '%s %s %s\n' "$release_id" "$mode" "$commit"
 }
 
@@ -505,14 +563,20 @@ cmd_branches() {
   local name="${1:-}"
   shift || true
   local limit=20
+  local fetch=0
   while (($#)); do
     case "$1" in
+      --fetch) fetch=1; shift ;;
       --limit) limit="${2:-}"; shift 2 ;;
       *) die "unknown branches argument: $1" ;;
     esac
   done
   load_config "$name"
-  ensure_repo "$name"
+  if ((fetch)); then
+    fetch_repo "$name"
+  else
+    ensure_repo_cache "$name"
+  fi
   git -C "$(repo_dir_for "$name")" for-each-ref refs/remotes/origin --format='%(refname:short)' --sort=-committerdate |
     sed 's#^origin/##' |
     grep -v '^HEAD$' |
@@ -523,14 +587,20 @@ cmd_tags() {
   local name="${1:-}"
   shift || true
   local limit=20
+  local fetch=0
   while (($#)); do
     case "$1" in
+      --fetch) fetch=1; shift ;;
       --limit) limit="${2:-}"; shift 2 ;;
       *) die "unknown tags argument: $1" ;;
     esac
   done
   load_config "$name"
-  ensure_repo "$name"
+  if ((fetch)); then
+    fetch_repo "$name"
+  else
+    ensure_repo_cache "$name"
+  fi
   git -C "$(repo_dir_for "$name")" for-each-ref refs/tags --format='%(refname:short)' --sort=-creatordate |
     head -n "$limit"
 }
@@ -539,14 +609,20 @@ cmd_commits() {
   local name="${1:-}"
   shift || true
   local limit=20
+  local fetch=0
   while (($#)); do
     case "$1" in
+      --fetch) fetch=1; shift ;;
       --limit) limit="${2:-}"; shift 2 ;;
       *) die "unknown commits argument: $1" ;;
     esac
   done
   load_config "$name"
-  ensure_repo "$name"
+  if ((fetch)); then
+    fetch_repo "$name"
+  else
+    ensure_repo_cache "$name"
+  fi
   git -C "$(repo_dir_for "$name")" log --format='%H %s' -n "$limit" "origin/$default_ref"
 }
 
