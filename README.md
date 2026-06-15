@@ -1,6 +1,6 @@
 # WP Cloud Site Git Deploy
 
-`wpcloud-site-git-deploy` is a Bash CLI for deploying a Git repository from an SSH session on a WP Cloud or Pressable site.
+`wpcloud-site-git-deploy` is a statically compiled CLI for deploying a Git repository from an SSH session on a WP Cloud or Pressable site.
 
 It keeps Git checkouts, config, and credentials under `$HOME`, but copies every web-visible release into the docroot deployment namespace before promotion. Public symlinks are always relative links into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/current/...`; they never point back into `$HOME`.
 
@@ -14,14 +14,20 @@ git clone https://github.com/aipokalyptik/wpcloud-site-git-deploy.git /tmp/wpclo
 export PATH="$HOME/.wpcloud-site-git-deploy/bin:$PATH"
 ```
 
+Release installs should set `WPCLOUD_SITE_GIT_DEPLOY_BINARY` to the downloaded
+Linux amd64 binary before running `scripts/install.sh`. Source installs require
+Go so the installer can build the binary locally.
+
 Installed runtime files:
 
 - `$HOME/.wpcloud-site-git-deploy/bin/wpcloud-site-git-deploy`
-- `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
-- `$HOME/.wpcloud-site-git-deploy/lib/remote-deploy.sh`
 - `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`
 - `$HOME/.wpcloud-site-git-deploy/repos/<name>/`
 - `$HOME/.wpcloud-site-git-deploy/tmp/`
+
+The release binary includes the deploy engine and atomic exchange helper. It
+still uses the site user's installed `git`, `rsync`, and GNU/Linux filesystem
+tools as the deploy contract.
 
 ## Quick Start
 
@@ -109,6 +115,7 @@ Rollback uses the same conservative symlink reconciliation path as deploy. It fl
 
 ```bash
 tests/run.sh
+scripts/build-linux-amd64.sh
 ```
 
-Linux CI exercises the real GNU tooling and static `renameat2(RENAME_EXCHANGE)` helper. macOS local tests use small shims for Linux-only command behavior.
+Linux CI exercises the real GNU tooling and static Go build. macOS local tests use small shims for Linux-only command behavior.

@@ -7,7 +7,11 @@ fail() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-remote="$repo_root/lib/remote-deploy.sh"
+if [[ -n "${WPCLOUD_SITE_GIT_DEPLOY_CLI:-}" ]]; then
+  remote=("$WPCLOUD_SITE_GIT_DEPLOY_CLI" __remote-deploy)
+else
+  remote=("$repo_root/lib/remote-deploy.sh")
+fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -74,7 +78,7 @@ export GITHUB_SSH_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
 export GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
 
 printf 'ok\n' >"$incoming/index.html"
-"$remote" --docroot "$docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+"${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
 docroot_scans="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
 [[ "$docroot_scans" == "1" ]] || fail "deploy should scan docroot symlinks only for materialized claims, got $docroot_scans scans"
 
@@ -93,7 +97,7 @@ esac
 bad="$docroot/bad-link"
 ln -s "$home_like/file" "$bad"
 scan_count_before_audit="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
-if "$remote" --docroot "$docroot" --deployment-id site --assert-public-symlinks >/dev/null 2>"$tmpdir/bad.log"; then
+if "${remote[@]}" --docroot "$docroot" --deployment-id site --assert-public-symlinks >/dev/null 2>"$tmpdir/bad.log"; then
   fail "assert-public-symlinks should reject HOME symlink"
 fi
 scan_count_after_audit="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || true)"
@@ -115,7 +119,7 @@ assert_corrupt_claim_fails() {
   : >"$find_log"
 
   if HOME="$home_like" WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$corrupt_docroot" WPCLOUD_SITE_GIT_DEPLOY_CORRUPT_LINK_TARGET="$corrupt_target" \
-    "$remote" --docroot "$corrupt_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/$name.log"; then
+    "${remote[@]}" --docroot "$corrupt_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/$name.log"; then
     fail "scoped assertion should reject $name target"
   fi
 
@@ -125,3 +129,27 @@ assert_corrupt_claim_fails() {
 assert_corrupt_claim_fails absolute "/outside-target" "public symlink target is absolute: index.html"
 assert_corrupt_claim_fails home "../${home_like#/}/file" "public symlink target contains HOME: index.html"
 assert_corrupt_claim_fails outside "../outside-target" "public symlink resolves outside docroot: index.html"
+
+protected_docroot="$tmpdir/protected-docroot"
+protected_base="$protected_docroot/.github-ssh-deploy/deployments/site"
+protected_incoming="$protected_base/incoming/release-one"
+protected_file="$tmpdir/protected-anchors"
+mkdir -p "$protected_incoming"
+printf 'blocked\n' >"$protected_incoming/index.html"
+printf 'index.html\n' >"$protected_file"
+if GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$protected_file" \
+  "${remote[@]}" --docroot "$protected_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/protected.log"; then
+  fail "protected claim should fail"
+fi
+grep -Fq -- "protected path: index.html" "$tmpdir/protected.log" || fail "unexpected protected path message"
+
+foreign_docroot="$tmpdir/foreign-docroot"
+foreign_base="$foreign_docroot/.github-ssh-deploy/deployments/site"
+foreign_incoming="$foreign_base/incoming/release-one"
+mkdir -p "$foreign_incoming" "$foreign_docroot/.github-ssh-deploy/deployments/other/current"
+printf 'blocked\n' >"$foreign_incoming/index.html"
+ln -s ".github-ssh-deploy/deployments/other/current/index.html" "$foreign_docroot/index.html"
+if "${remote[@]}" --docroot "$foreign_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/foreign.log"; then
+  fail "foreign deployment claim should fail"
+fi
+grep -Fq -- "claim owned by another deployment: index.html" "$tmpdir/foreign.log" || fail "unexpected foreign claim message"

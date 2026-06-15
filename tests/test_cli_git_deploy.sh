@@ -29,7 +29,7 @@ inode_of() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cli="$repo_root/bin/wpcloud-site-git-deploy"
+cli="${WPCLOUD_SITE_GIT_DEPLOY_CLI:-$repo_root/bin/wpcloud-site-git-deploy}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
