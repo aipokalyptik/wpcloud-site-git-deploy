@@ -195,6 +195,7 @@ prepare_git_features() {
   local attr
   local uses_lfs=0
   local files_list="$TMP_DIR/git-files.$$.list"
+  local attrs_list="$TMP_DIR/git-attrs.$$.list"
   local lfs_paths_list="$TMP_DIR/git-lfs-paths.$$.list"
   local lfs_pointer_paths="$TMP_DIR/git-lfs-pointers.$$.list"
 
@@ -209,14 +210,15 @@ prepare_git_features() {
   # valid text files from Git's perspective. Detect LFS attributes and pull real
   # objects before copying into the docroot release tree.
   git -C "$worktree" ls-files -z >"$files_list"
+  git -C "$worktree" check-attr filter --stdin -z <"$files_list" >"$attrs_list"
   : >"$lfs_paths_list"
   while IFS= read -r -d '' path && IFS= read -r -d '' _ && IFS= read -r -d '' attr; do
     if [[ "$attr" == "lfs" ]]; then
       uses_lfs=1
       printf '%s\0' "$path" >>"$lfs_paths_list"
     fi
-  done < <(git -C "$worktree" check-attr filter --stdin -z <"$files_list")
-  rm -f "$files_list"
+  done <"$attrs_list"
+  rm -f "$files_list" "$attrs_list"
 
   if ((uses_lfs)); then
     command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
@@ -233,7 +235,7 @@ prepare_git_features() {
     fi
     rm -f "$lfs_pointer_paths"
   fi
-  rm -f "$lfs_paths_list"
+  rm -f "$lfs_paths_list" "$attrs_list"
 }
 
 make_release_id() {
