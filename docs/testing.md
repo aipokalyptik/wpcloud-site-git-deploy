@@ -21,10 +21,11 @@ The suite runs:
 
 - `tests/test_cli_git_deploy.sh`, a black-box deploy test using local Git
   repositories, fake Linux-only command shims where needed, cached inspection
-  checks, rollback, worktree cleanup, hardlink reuse, and Git LFS behavior.
+  checks, rollback, worktree cleanup, no-op deploys, deploy-root behavior,
+  hardlink reuse, and Git LFS behavior.
 - `tests/test_auth_doctor.sh`, a setup-focused test for deploy-key generation,
-  GitHub HTTPS-to-SSH conversion, generic SSH guidance, doctor diagnostics, and
-  configured `GIT_SSH_COMMAND` verification.
+  auth removal, GitHub HTTPS-to-SSH conversion, generic SSH guidance, doctor
+  diagnostics, and configured `GIT_SSH_COMMAND` verification.
 - `tests/test_remote_invariants.sh`, a direct test of the embedded
   `__remote-deploy` path for public symlink invariants, scoped assertion
   behavior, and full-docroot audit behavior.
@@ -97,8 +98,8 @@ Before pushing a release-sensitive change:
    and the fact that the CLI does not edit `~/.ssh/config`.
 4. Confirm deploy docs preserve the `$HOME` state layout and docroot release
    namespace.
-5. Confirm LFS, submodule, rollback, cached inspection, and symlink safety
-   behavior still match the CLI.
+5. Confirm LFS, submodule, rollback, cached inspection, no-op deploy,
+   deploy-root, and symlink safety behavior still match the CLI.
 6. Run `tests/run.sh` and `git diff --check`.
 7. Repeat the live E2E matrix for changes that touch promotion, rollback,
    claims, LFS/submodules, repository caching, or install/runtime layout.

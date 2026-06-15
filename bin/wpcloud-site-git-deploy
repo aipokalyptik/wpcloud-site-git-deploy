@@ -17,7 +17,8 @@ HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 usage() {
   cat <<'USAGE'
 Usage:
-  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main
+  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--deploy-root PATH]
+  wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root]
   wpcloud-site-git-deploy deploy <name> --branch BRANCH
   wpcloud-site-git-deploy deploy <name> --tag TAG
   wpcloud-site-git-deploy deploy <name> --commit SHA
@@ -28,7 +29,7 @@ Usage:
   wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
   wpcloud-site-git-deploy status <name>
-  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify]
+  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--remove [--purge-key]]
   wpcloud-site-git-deploy doctor <name> [--offline]
 USAGE
 }
@@ -81,6 +82,7 @@ load_config() {
   : "${default_ref:?}"
   keep_releases="${keep_releases:-$DEFAULT_KEEP_RELEASES}"
   ssh_key_path="${ssh_key_path:-}"
+  deploy_root="${deploy_root:-}"
 }
 
 ensure_state_dirs() {
@@ -98,11 +100,38 @@ write_config() {
     write_config_value deployment_id "$deployment_id"
     write_config_value default_ref "$default_ref"
     write_config_value keep_releases "$keep_releases"
+    if [[ -n "${deploy_root:-}" ]]; then
+      write_config_value deploy_root "$deploy_root"
+    fi
     if [[ -n "${ssh_key_path:-}" ]]; then
       write_config_value ssh_key_path "$ssh_key_path"
     fi
   } >"$path"
   chmod 600 "$path"
+}
+
+require_deploy_root() {
+  local value="$1"
+  local component
+  local rest
+
+  [[ -n "$value" ]] || die "deploy-root must be a safe relative path"
+  [[ "$value" != /* ]] || die "deploy-root must be a safe relative path"
+  [[ "$value" != *$'\n'* ]] || die "deploy-root must be a safe relative path"
+  [[ "$value" != */ ]] || die "deploy-root must be a safe relative path"
+  [[ "$value" != *//* ]] || die "deploy-root must be a safe relative path"
+
+  rest="$value"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then
+      component="${rest%%/*}"
+      rest="${rest#*/}"
+    else
+      component="$rest"
+      rest=""
+    fi
+    [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || die "deploy-root must be a safe relative path"
+  done
 }
 
 git_ssh_command() {
@@ -343,10 +372,19 @@ copy_worktree_to_incoming() {
   local release_id="$2"
   local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
   local incoming="$docroot/.github-ssh-deploy/deployments/$deployment_id/incoming/$release_id"
+  local deploy_source="$worktree"
   local exclude_file="$TMP_DIR/excludes.$$.txt"
   local current_release=""
   local link_dest=""
   local rsync_args=()
+
+  if [[ -n "${deploy_root:-}" ]]; then
+    deploy_source="$worktree/$deploy_root"
+  fi
+  if [[ ! -d "$deploy_source" ]]; then
+    echo "wpcloud-site-git-deploy: deploy root does not exist or is not a directory: ${deploy_root:-.}" >&2
+    return 1
+  fi
 
   rm -rf "$incoming"
   mkdir -p "$incoming"
@@ -361,7 +399,7 @@ copy_worktree_to_incoming() {
   if [[ -n "$link_dest" ]]; then
     rsync_args+=(--checksum --link-dest="$link_dest")
   fi
-  rsync "${rsync_args[@]}" "$worktree/" "$incoming/"
+  rsync "${rsync_args[@]}" "$deploy_source/" "$incoming/"
   rm -f "$exclude_file"
 }
 
@@ -379,8 +417,46 @@ write_release_metadata() {
     write_config_value ref_mode "$mode"
     write_config_value ref_value "$ref_value"
     write_config_value commit "$commit"
+    write_config_value deploy_root "${deploy_root:-}"
     write_config_value deployed_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   } >"$metadata_file"
+}
+
+metadata_value() {
+  local metadata_file="$1"
+  local key="$2"
+
+  (
+    set +u
+    # shellcheck disable=SC1090
+    source "$metadata_file"
+    printf '%s\n' "${!key:-}"
+  )
+}
+
+current_release_metadata_file() {
+  local current
+  local metadata_file
+
+  current="$(current_release_id || true)"
+  [[ -n "$current" ]] || return 1
+  metadata_file="$docroot/.github-ssh-deploy/deployments/$deployment_id/metadata/$current.env"
+  [[ -f "$metadata_file" ]] || return 1
+  printf '%s\n' "$metadata_file"
+}
+
+current_release_matches() {
+  local commit="$1"
+  local expected_deploy_root="${2:-}"
+  local metadata_file
+  local metadata_commit
+  local metadata_deploy_root
+
+  metadata_file="$(current_release_metadata_file)" || return 1
+  metadata_commit="$(metadata_value "$metadata_file" commit)"
+  metadata_deploy_root="$(metadata_value "$metadata_file" deploy_root)"
+
+  [[ "$metadata_commit" == "$commit" && "$metadata_deploy_root" == "$expected_deploy_root" ]]
 }
 
 remote_deploy_env() {
@@ -427,6 +503,10 @@ deploy_ref() {
   helper="$(ensure_helper)"
   fetch_repo "$name"
   commit="$(resolve_ref "$name" "$mode" "$value")"
+  if current_release_matches "$commit" "${deploy_root:-}"; then
+    printf 'no-op %s %s %s\n' "$(current_release_id)" "$mode" "$commit"
+    return 0
+  fi
   release_id="$(make_release_id "$commit")"
   worktree="$(create_worktree "$name" "$commit" "$release_id")"
   if ! copy_worktree_to_incoming "$worktree" "$release_id"; then
@@ -560,6 +640,8 @@ cmd_auth() {
   shift || true
   local force_new_key=0
   local verify=0
+  local remove=0
+  local purge_key=0
   local key_path
   local host
   local public_key
@@ -569,12 +651,40 @@ cmd_auth() {
     case "$1" in
       --force-new-key) force_new_key=1; shift ;;
       --verify) verify=1; shift ;;
+      --remove) remove=1; shift ;;
+      --purge-key) purge_key=1; shift ;;
       *) die "unknown auth argument: $1" ;;
     esac
   done
 
   load_config "$name"
   ensure_state_dirs
+
+  if ((remove)); then
+    if ((verify || force_new_key)); then
+      die "--remove cannot be combined with --verify or --force-new-key"
+    fi
+    key_path="${ssh_key_path:-}"
+    ssh_key_path=""
+    write_config "$name"
+    printf 'Removed deploy key configuration for %s\n' "$name"
+    if ((purge_key)); then
+      if [[ -n "$key_path" && "$key_path" == "$KEYS_DIR"/* ]]; then
+        rm -f "$key_path" "$key_path.pub"
+        printf 'Deleted deploy key files for %s\n' "$name"
+      elif [[ -n "$key_path" ]]; then
+        printf 'Did not delete external key files: %s\n' "$key_path"
+      else
+        printf 'No deploy key files configured for %s\n' "$name"
+      fi
+    fi
+    return 0
+  fi
+
+  if ((purge_key)); then
+    die "--purge-key requires --remove"
+  fi
+
   if [[ "$repo_url" =~ ^https:// && ! "$repo_url" =~ ^https://github\.com/ ]]; then
     die "generic HTTPS repository URLs cannot be configured for deploy keys automatically; reinitialize or edit the repo URL to an SSH URL"
   fi
@@ -720,6 +830,39 @@ cmd_doctor() {
   ((doctor_failures == 0))
 }
 
+cmd_config() {
+  local name="${1:-}"
+  shift || true
+  local set_deploy_root=""
+  local clear_deploy_root=0
+
+  require_name "$name"
+  while (($#)); do
+    case "$1" in
+      --deploy-root) set_deploy_root="${2:-}"; shift 2 ;;
+      --clear-deploy-root) clear_deploy_root=1; shift ;;
+      *) die "unknown config argument: $1" ;;
+    esac
+  done
+
+  [[ -n "$set_deploy_root" || "$clear_deploy_root" -eq 1 ]] || die "config requires --deploy-root or --clear-deploy-root"
+  if [[ -n "$set_deploy_root" && "$clear_deploy_root" -eq 1 ]]; then
+    die "choose only one deploy root option"
+  fi
+
+  load_config "$name"
+  if [[ -n "$set_deploy_root" ]]; then
+    require_deploy_root "$set_deploy_root"
+    deploy_root="$set_deploy_root"
+    write_config "$name"
+    printf 'configured %s deploy_root=%s\n' "$name" "$deploy_root"
+  else
+    deploy_root=""
+    write_config "$name"
+    printf 'cleared %s deploy_root\n' "$name"
+  fi
+}
+
 cmd_init() {
   local name="${1:-}"
   shift || true
@@ -728,6 +871,7 @@ cmd_init() {
   local init_deployment_id=""
   local init_default_ref=""
   local init_keep_releases="$DEFAULT_KEEP_RELEASES"
+  local init_deploy_root=""
 
   require_name "$name"
   while (($#)); do
@@ -737,6 +881,7 @@ cmd_init() {
       --deployment-id) init_deployment_id="${2:-}"; shift 2 ;;
       --default-ref) init_default_ref="${2:-}"; shift 2 ;;
       --keep-releases) init_keep_releases="${2:-}"; shift 2 ;;
+      --deploy-root) init_deploy_root="${2:-}"; shift 2 ;;
       *) die "unknown init argument: $1" ;;
     esac
   done
@@ -747,6 +892,9 @@ cmd_init() {
   [[ -n "$init_default_ref" ]] || die "--default-ref is required"
   require_id "$init_deployment_id"
   [[ "$init_keep_releases" =~ ^[0-9]+$ && "$init_keep_releases" -ge 1 ]] || die "--keep-releases must be a positive integer"
+  if [[ -n "$init_deploy_root" ]]; then
+    require_deploy_root "$init_deploy_root"
+  fi
 
   ensure_state_dirs
   ensure_helper >/dev/null
@@ -755,6 +903,7 @@ cmd_init() {
   deployment_id="$init_deployment_id"
   default_ref="$init_default_ref"
   keep_releases="$init_keep_releases"
+  deploy_root="$init_deploy_root"
   ssh_key_path=""
   write_config "$name"
   printf 'initialized %s\n' "$name"
@@ -828,9 +977,13 @@ cmd_releases() {
     printf '%s' "${release##*/}"
     [[ "${release##*/}" == "$current" ]] && printf ' current'
     if [[ -f "$metadata" ]]; then
+      deploy_root=""
       # shellcheck disable=SC1090
       source "$metadata"
       printf ' %s %s' "${commit:-unknown}" "${ref_mode:-unknown}:${ref_value:-unknown}"
+      if [[ -n "${deploy_root:-}" ]]; then
+        printf ' deploy-root:%s' "$deploy_root"
+      fi
     fi
     printf '\n'
   done
@@ -911,6 +1064,7 @@ cmd_status() {
   printf 'docroot=%s\n' "$docroot"
   printf 'deployment_id=%s\n' "$deployment_id"
   printf 'default_ref=%s\n' "$default_ref"
+  printf 'deploy_root=%s\n' "${deploy_root:-}"
   printf 'current=%s\n' "$(current_release_id || true)"
 }
 
@@ -1919,6 +2073,7 @@ main() {
 
   case "$command" in
     init) cmd_init "$@" ;;
+    config) cmd_config "$@" ;;
     deploy) cmd_deploy "$@" ;;
     update) cmd_update "$@" ;;
     rollback) cmd_rollback "$@" ;;

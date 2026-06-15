@@ -111,6 +111,31 @@ assert_contains "GIT_SSH_COMMAND=ssh -i $key_path -o IdentitiesOnly=yes -o Batch
 HOME="$home_dir" "$cli" auth site --verify >"$tmpdir/auth-verify.txt"
 assert_contains "Verified remote access for git@github.com:example/private-site.git" "$tmpdir/auth-verify.txt"
 
+if HOME="$home_dir" "$cli" auth site --remove --verify >"$tmpdir/auth-remove-bad.txt" 2>&1; then
+  fail "auth --remove --verify should fail"
+fi
+assert_contains "--remove cannot be combined with --verify or --force-new-key" "$tmpdir/auth-remove-bad.txt"
+
+HOME="$home_dir" "$cli" auth site --remove >"$tmpdir/auth-remove.txt"
+assert_contains "Removed deploy key configuration for site" "$tmpdir/auth-remove.txt"
+assert_not_contains "ssh_key_path=" "$config_file"
+[[ -f "$key_path" ]] || fail "auth --remove should preserve private key by default"
+[[ -f "$key_path.pub" ]] || fail "auth --remove should preserve public key by default"
+>"$tmpdir/git.log"
+HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-no-key.txt" || true
+assert_contains "FAIL ssh-key: no deploy key configured" "$tmpdir/doctor-no-key.txt"
+HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-no-key-remote.txt" || true
+assert_contains "git ls-remote git@github.com:example/private-site.git HEAD GIT_SSH_COMMAND=" "$tmpdir/git.log"
+
+HOME="$home_dir" "$cli" auth site >/dev/null
+HOME="$home_dir" "$cli" auth site --remove --purge-key >"$tmpdir/auth-purge.txt"
+assert_contains "Deleted deploy key files" "$tmpdir/auth-purge.txt"
+[[ ! -e "$key_path" ]] || fail "auth --remove --purge-key should delete private key"
+[[ ! -e "$key_path.pub" ]] || fail "auth --remove --purge-key should delete public key"
+assert_not_contains "ssh_key_path=" "$config_file"
+
+HOME="$home_dir" "$cli" auth site >/dev/null
+
 chmod 666 "$key_path"
 if HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-bad-key.txt"; then
   fail "doctor should fail for permissive private key"

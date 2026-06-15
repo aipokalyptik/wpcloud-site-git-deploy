@@ -77,6 +77,26 @@ wpcloud-site-git-deploy update site
 wpcloud-site-git-deploy rollback site
 ```
 
+For repositories where the deployable files live in a subdirectory, configure a
+deploy root:
+
+```bash
+wpcloud-site-git-deploy init site \
+  --repo https://github.com/example/site-content.git \
+  --docroot /srv/htdocs \
+  --deployment-id site \
+  --default-ref main \
+  --deploy-root public
+
+wpcloud-site-git-deploy config site --deploy-root build/output
+wpcloud-site-git-deploy config site --clear-deploy-root
+```
+
+When `deploy_root` is set, the CLI still checks out and prepares the full
+repository, but deploys the contents of that subdirectory as the docroot root.
+For example, `public/index.php` deploys to `/srv/htdocs/index.php`, not
+`/srv/htdocs/public/index.php`.
+
 Inspection and status commands:
 
 ```bash
@@ -97,9 +117,12 @@ Command output is script-friendly:
 
 - `deploy` prints `<release-id> <ref-mode> <commit>`.
 - `update` prints `<release-id> branch <commit>`.
+- `deploy` and `update` print `no-op <release-id> <ref-mode> <commit>` when
+  the fetched commit and configured deploy root already match the active
+  release.
 - `rollback` prints `rolled back to <release-id>`.
 - `status` prints `name`, `repo`, `docroot`, `deployment_id`,
-  `default_ref`, and `current` as `key=value` lines.
+  `default_ref`, `deploy_root`, and `current` as `key=value` lines.
 - `doctor` prints `OK`, `WARN`, and `FAIL` lines and exits nonzero when any
   required check fails.
 
@@ -129,6 +152,16 @@ The CLI does not edit `~/.ssh/config`. When `ssh_key_path` is configured, Git
 network operations run with a tool-managed `GIT_SSH_COMMAND` that pins the
 deployment to that key.
 
+To stop using the configured deploy key:
+
+```bash
+wpcloud-site-git-deploy auth site --remove
+```
+
+That clears `ssh_key_path` from the deployment config and leaves key files in
+place. Add `--purge-key` to delete key files managed under
+`$HOME/.wpcloud-site-git-deploy/keys/`.
+
 For HTTPS remotes, use Git’s standard credential storage or an HTTPS URL/token mechanism appropriate for the site user. Do not place credentials in the repository being deployed.
 
 ## Git LFS And Submodules
@@ -153,7 +186,7 @@ Each deploy:
 2. Resolves the requested branch, tag, commit, or configured default ref.
 3. Creates a clean worktree under `$HOME/.wpcloud-site-git-deploy/tmp/`.
 4. Prepares Git LFS files and submodules when present.
-5. Copies deployable files into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
+5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
 6. Promotes that incoming tree to `releases/<release-id>/`.
 7. Reconciles public symlinks and atomically flips `current`.
 
@@ -166,6 +199,11 @@ commit inspection only fetch when `--fetch` is provided.
 When `ssh_key_path` is configured by `auth`, clone, fetch, Git LFS pull, and
 recursive submodule updates all use the configured deploy key through
 `GIT_SSH_COMMAND`.
+
+After fetching and resolving the requested ref, deploy and update compare the
+resolved commit plus configured deploy root to the active release metadata. If
+both match, the command exits successfully without creating a worktree,
+incoming release, promoted release, metadata file, or pruning pass.
 
 ## Safety Rules
 

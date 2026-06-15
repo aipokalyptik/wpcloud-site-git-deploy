@@ -199,6 +199,65 @@ assert_contains "clone $source_repo $repo_cache|ssh -i $home_dir/.wpcloud-site-g
 assert_contains "-C $repo_cache fetch --tags --prune origin|ssh -i $home_dir/.wpcloud-site-git-deploy/keys/site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$ssh_env_log"
 assert_contains "submodule update --init --recursive|ssh -i $home_dir/.wpcloud-site-git-deploy/keys/site_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$ssh_env_log"
 
+late_deploy="$(HOME="$home_dir" "$cli" update site)"
+late_release="${late_deploy%% *}"
+grep -Fx 'hello from late main' "$docroot/index.html" >/dev/null || fail "update should deploy late main content before no-op"
+noop_before_count="$(find "$docroot/.github-ssh-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+noop_output="$(HOME="$home_dir" "$cli" update site)"
+noop_after_count="$(find "$docroot/.github-ssh-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+[[ "$noop_before_count" == "$noop_after_count" ]] || fail "no-op update should not create a new release"
+case "$noop_output" in
+  "no-op $late_release branch $late_commit") ;;
+  *) fail "unexpected no-op output: $noop_output" ;;
+esac
+
+root_source_repo="$tmpdir/root-source"
+root_home_dir="$tmpdir/root-home"
+root_docroot="$tmpdir/root-docroot"
+mkdir -p "$root_source_repo/public/wp-content/themes/demo" "$root_home_dir" "$root_docroot"
+git -C "$root_source_repo" init -b main >/dev/null
+git -C "$root_source_repo" config user.name "WP Cloud Deploy Test"
+git -C "$root_source_repo" config user.email "wpcloud-deploy-test@example.invalid"
+printf 'root only\n' >"$root_source_repo/README.md"
+printf 'from public\n' >"$root_source_repo/public/index.html"
+printf 'theme file\n' >"$root_source_repo/public/wp-content/themes/demo/style.css"
+git -C "$root_source_repo" add .
+git -C "$root_source_repo" commit -m "subfolder root" >/dev/null
+root_commit="$(git -C "$root_source_repo" rev-parse HEAD)"
+
+HOME="$root_home_dir" "$cli" init root-site \
+  --repo "$root_source_repo" \
+  --docroot "$root_docroot" \
+  --deployment-id root-site \
+  --default-ref main \
+  --deploy-root public >/dev/null
+HOME="$root_home_dir" "$cli" update root-site >/dev/null
+grep -Fx 'from public' "$root_docroot/index.html" >/dev/null || fail "deploy-root should publish subfolder index at docroot root"
+grep -Fx 'theme file' "$root_docroot/wp-content/themes/demo/style.css" >/dev/null || fail "deploy-root should preserve paths under subfolder"
+[[ ! -e "$root_docroot/public/index.html" ]] || fail "deploy-root should not publish subfolder name"
+[[ ! -e "$root_docroot/README.md" ]] || fail "deploy-root should not publish repo root files"
+HOME="$root_home_dir" "$cli" releases root-site >"$tmpdir/root-releases.txt"
+assert_contains "$root_commit" "$tmpdir/root-releases.txt"
+assert_contains "deploy-root:public" "$tmpdir/root-releases.txt"
+assert_contains "deploy_root=public" <(HOME="$root_home_dir" "$cli" status root-site)
+
+HOME="$root_home_dir" "$cli" config root-site --deploy-root missing >/dev/null
+if HOME="$root_home_dir" "$cli" update root-site >"$tmpdir/missing-root.txt" 2>&1; then
+  fail "missing deploy root should fail"
+fi
+assert_contains "deploy root does not exist or is not a directory: missing" "$tmpdir/missing-root.txt"
+if HOME="$root_home_dir" "$cli" config root-site --deploy-root ../outside >"$tmpdir/bad-root.txt" 2>&1; then
+  fail "unsafe deploy root should fail"
+fi
+assert_contains "deploy-root must be a safe relative path" "$tmpdir/bad-root.txt"
+HOME="$root_home_dir" "$cli" config root-site --clear-deploy-root >/dev/null
+assert_contains "deploy_root=" <(HOME="$root_home_dir" "$cli" status root-site)
+root_count_before_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+HOME="$root_home_dir" "$cli" update root-site >/dev/null
+root_count_after_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+[[ "$root_count_after_clear_deploy" -gt "$root_count_before_clear_deploy" ]] || fail "changing deploy root should deploy the same commit again"
+grep -Fx 'root only' "$root_docroot/README.md" >/dev/null || fail "clearing deploy-root should publish repo root files"
+
 lfs_source_repo="$tmpdir/lfs-source"
 lfs_home_dir="$tmpdir/lfs-home"
 lfs_docroot="$tmpdir/lfs-docroot"

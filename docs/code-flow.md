@@ -11,13 +11,16 @@ flowchart TD
   B --> C["main(): dispatch command"]
 
   C -->|init| I["cmd_init"]
-  I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases"]
+  I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases, deploy-root"]
   I1 --> I2["ensure_state_dirs"]
   I2 --> I3["ensure_helper: install exchange-rename if needed"]
   I3 --> I4["Write deployment config under $HOME/.wpcloud-site-git-deploy/deployments"]
 
+  C -->|config| CFG["cmd_config"]
+  CFG --> CFG1["Set or clear deploy_root in deployment config"]
+
   C -->|auth| AU["cmd_auth"]
-  AU --> AU1["Load deployment config and normalize GitHub HTTPS URL to SSH"]
+  AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize GitHub HTTPS URL to SSH"]
   AU1 --> AU2["Create or reuse $HOME/.wpcloud-site-git-deploy/keys/<name>_ed25519"]
   AU2 --> AU3["Store ssh_key_path in deployment config"]
   AU3 --> AU4["Print public deploy key and host-specific instructions"]
@@ -39,7 +42,9 @@ flowchart TD
   DR1 --> DR2["ensure_state_dirs and ensure_helper"]
   DR2 --> DR3["fetch_repo: clone/cache, fetch tags/prune, git gc --auto"]
   DR3 --> DR4["resolve_ref to commit"]
-  DR4 --> DR5["make_release_id"]
+  DR4 --> NR{"Current metadata commit + deploy_root match?"}
+  NR -->|yes| NRO["Print no-op release_id ref_mode commit"]
+  NR -->|no| DR5["make_release_id"]
   DR5 --> DR6["create_worktree via git worktree add --detach"]
   DR6 --> PGF["prepare_git_features"]
   PGF --> PGF1["Initialize submodules recursively if .gitmodules exists"]
@@ -48,7 +53,7 @@ flowchart TD
   PGF3 -->|yes| PGF4["Require git-lfs, run lfs pull, reject unresolved pointers"]
   PGF3 -->|no| DR7["copy_worktree_to_incoming"]
   PGF4 --> DR7
-  DR7 --> DR8["rsync worktree to docroot incoming release, using --link-dest when possible"]
+  DR7 --> DR8["rsync worktree or deploy_root subdir to docroot incoming release, using --link-dest when possible"]
   DR8 --> PR["promote_release"]
 
   PR --> RDE["remote_deploy_entry --release-id"]
@@ -112,7 +117,7 @@ The public commands stay in the top-level CLI. The former remote deployment
 engine now lives inside `remote_deploy_entry()` and is reachable through the
 hidden `__remote-deploy` command for tests and internal promotion/rollback use.
 
-The production entry points are `init`, `deploy`, `update`, `rollback`,
-`releases`, `branches`, `tags`, `commits`, `status`, `auth`, and `doctor`. The
-hidden command is documented here only so maintainers can follow the embedded
-code path.
+The production entry points are `init`, `config`, `deploy`, `update`,
+`rollback`, `releases`, `branches`, `tags`, `commits`, `status`, `auth`, and
+`doctor`. The hidden command is documented here only so maintainers can follow
+the embedded code path.
