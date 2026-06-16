@@ -174,6 +174,11 @@ not finished, and reports failed entries through the `site-cron-results`
 webhook. Each cron entry has an eight-hour maximum runtime, and up to three
 cron entries can run concurrently per site.
 
+If two cron entries or manual sessions try to promote the same deployment at
+the same time, the later `wpcloud-site-git-deploy update` fails with
+`deployment already running`. Use one cron entry per deployment unless you are
+deliberately managing overlap.
+
 Check recent cron output over SSH:
 
 ```bash

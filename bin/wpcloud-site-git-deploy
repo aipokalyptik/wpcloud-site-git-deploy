@@ -1848,7 +1848,7 @@ acquire_lock() {
   # fd 9 is just a private lock handle. There is no explicit unlock: the kernel
   # releases the flock when this process exits and closes the descriptor.
   exec 9>"$lock_file"
-  flock -x 9
+  flock -n -x 9 || engine_die "deployment already running"
 }
 
 prune_releases() {

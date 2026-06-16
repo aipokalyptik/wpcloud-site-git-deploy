@@ -82,6 +82,7 @@ mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$plain_home_dir" "$docroot" "$p
 touch "$tmpdir/gitconfig"
 export GIT_CONFIG_GLOBAL="$tmpdir/gitconfig"
 system_git="$(command -v git)"
+system_flock="$(command -v flock)"
 git_log="$tmpdir/git.log"
 ssh_env_log="$tmpdir/ssh-env.log"
 
@@ -94,9 +95,9 @@ if [[ "\${1:-}" == "-C" && "\${3:-}" == "gc" && "\${4:-}" == "--auto" ]]; then
 fi
 exec "$system_git" "\$@"
 SH
-cat >"$fake_bin/flock" <<'SH'
+cat >"$fake_bin/flock" <<SH
 #!/usr/bin/env bash
-exit 0
+exec "$system_flock" "\$@"
 SH
 chmod +x "$fake_bin/flock"
 chmod +x "$fake_bin/git"
@@ -344,7 +345,6 @@ assert_contains "maintenance_file=.maintenance" "$tmpdir/status-post-deploy.txt"
 printf 'post deploy content\n' >"$source_repo/index.html"
 git -C "$source_repo" add index.html
 git -C "$source_repo" commit -m "post deploy content" >/dev/null
-post_commit="$(git -C "$source_repo" rev-parse HEAD)"
 HOME="$home_dir" "$cli" update site >/dev/null
 assert_contains "configured:$docroot:post deploy content" "$post_marker"
 [[ ! -e "$docroot/.maintenance" ]] || fail "successful post-deploy should remove maintenance file"
@@ -383,21 +383,70 @@ HOME="$home_dir" "$cli" update site --force >/dev/null
 cleared_runs_after="$(wc -l <"$post_marker" | tr -d ' ')"
 [[ "$cleared_runs_after" == "$cleared_runs_before" ]] || fail "cleared post-deploy config should stop automatic hook execution"
 
+blocking_hook="$tmpdir/blocking-post-deploy.sh"
+blocking_ready="$tmpdir/blocking-ready"
+blocking_release="$tmpdir/blocking-release"
+blocking_marker="$tmpdir/blocking-marker"
+cat >"$blocking_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ready\n' >"$blocking_ready"
+while [[ ! -e "$blocking_release" ]]; do
+  sleep 0.1
+done
+printf 'blocked:%s:%s\n' "\$PWD" "\$(cat index.html)" >"$blocking_marker"
+SH
+chmod +x "$blocking_hook"
+printf 'concurrent deploy content\n' >"$source_repo/index.html"
+git -C "$source_repo" add index.html
+git -C "$source_repo" commit -m "concurrent deploy content" >/dev/null
+(
+  set +e
+  HOME="$home_dir" "$cli" update site --force --post-deploy "$blocking_hook" >"$tmpdir/blocking-update.out" 2>"$tmpdir/blocking-update.err"
+  printf '%s\n' "$?" >"$tmpdir/blocking-update.status"
+) &
+blocking_pid="$!"
+for _ in {1..100}; do
+  [[ -e "$blocking_ready" ]] && break
+  sleep 0.1
+done
+if [[ ! -e "$blocking_ready" ]]; then
+  touch "$blocking_release"
+  wait "$blocking_pid" || true
+  fail "blocking post-deploy did not start"
+fi
+if HOME="$home_dir" timeout 5 "$cli" update site --force >"$tmpdir/concurrent-update.out" 2>"$tmpdir/concurrent-update.err"; then
+  touch "$blocking_release"
+  wait "$blocking_pid" || true
+  fail "concurrent deployment should fail while another deployment is running"
+fi
+assert_contains "deployment already running" "$tmpdir/concurrent-update.err"
+touch "$blocking_release"
+wait "$blocking_pid"
+blocking_status="$(cat "$tmpdir/blocking-update.status")"
+if [[ "$blocking_status" != "0" ]]; then
+  cat "$tmpdir/blocking-update.err" >&2
+  fail "blocking deployment should complete after release"
+fi
+assert_contains "blocked:$docroot:concurrent deploy content" "$blocking_marker"
+[[ ! -e "$docroot/.maintenance" ]] || fail "blocking deployment should remove maintenance file"
+
 tampered_release="$(HOME="$home_dir" "$cli" status site | awk -F= '/^current=/{print $2}')"
+tampered_commit="$(HOME="$home_dir" "$cli" releases site | awk '$1 == "'"$tampered_release"'" { if ($2 == "current") print $3; else print $2 }')"
 metadata_file="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$tampered_release.env"
 tamper_marker="$tmpdir/metadata-executed"
 {
-  printf 'commit=%q\n' "$post_commit"
+  printf 'commit=%q\n' "$tampered_commit"
   printf 'ref_mode=branch\n'
   printf 'ref_value=main\n'
   printf 'deploy_root=\n'
   printf 'touch %q\n' "$tamper_marker"
 } >"$metadata_file"
 HOME="$home_dir" "$cli" update site >"$tmpdir/noop-tampered.txt"
-assert_contains "no-op $tampered_release branch $post_commit" "$tmpdir/noop-tampered.txt"
+assert_contains "no-op $tampered_release branch $tampered_commit" "$tmpdir/noop-tampered.txt"
 [[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from no-op path"
 HOME="$home_dir" "$cli" releases site >"$tmpdir/releases-tampered.txt"
-assert_contains "$post_commit branch:main" "$tmpdir/releases-tampered.txt"
+assert_contains "$tampered_commit branch:main" "$tmpdir/releases-tampered.txt"
 [[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from releases path"
 
 root_source_repo="$tmpdir/root-source"

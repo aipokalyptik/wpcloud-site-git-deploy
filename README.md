@@ -254,6 +254,9 @@ Each deploy:
     marker cleanup on failed deploys, failed hooks, and rollback.
 
 The previous release tree and public symlinks are used as deploy truth; no manifest is required.
+Only one deploy, update, or rollback may promote a given deployment id at a
+time. If another promotion is already running, the later command fails with
+`deployment already running` instead of waiting behind it.
 
 Repository fetches run `git gc --auto` after a successful
 `fetch --tags --prune origin`. Deploy and update always fetch. Branch, tag, and

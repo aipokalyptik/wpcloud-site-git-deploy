@@ -319,6 +319,12 @@ removes the other's maintenance marker. A deployment that finds another
 deployment's marker already present proceeds without owning that marker; a later
 deploy can create its own marker after the first one has been removed.
 
+Only one deploy, update, or rollback may promote a given deployment id at a
+time. If another promotion for the same deployment is already running, the
+second command fails with `deployment already running` instead of waiting. This
+keeps cron or automation overlap visible instead of silently queueing stale
+work.
+
 ## Inspecting State
 
 Show deployment config and active release:

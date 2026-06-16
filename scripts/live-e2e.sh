@@ -559,6 +559,56 @@ REMOTE
 log "## e2e-05-post-deploy-maintenance"
 log "- post-deploy hooks, failure behavior, tool-owned maintenance cleanup, non-owned preservation, rollback cleanup, custom maintenance-file, and maintenance-file none verified"
 
+remote_script e2e-05b-concurrent-deploy-rejection <<'REMOTE'
+set -euo pipefail
+export PATH="$HOME/.local/bin:$HOME/.wpcloud-site-git-deploy/bin:$PATH"
+hook=/tmp/live-blocking-post-deploy.sh
+ready=/tmp/live-blocking-post-deploy-ready
+release=/tmp/live-blocking-post-deploy-release
+marker=/tmp/live-blocking-post-deploy-marker
+rm -f "$ready" "$release" "$marker" /tmp/live-blocking-update.status
+cat >"$hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ready\n' >"$ready"
+while [[ ! -e "$release" ]]; do
+  sleep 0.1
+done
+printf 'done:%s:%s\n' "\$PWD" "\$(cat index.html)" >"$marker"
+SH
+chmod +x "$hook"
+(
+  set +e
+  wpcloud-site-git-deploy update cli-test --force --post-deploy "$hook" >/tmp/live-blocking-update.out 2>/tmp/live-blocking-update.err
+  printf '%s\n' "$?" >/tmp/live-blocking-update.status
+) &
+blocking_pid="$!"
+for _ in {1..100}; do
+  [[ -e "$ready" ]] && break
+  sleep 0.1
+done
+if [[ ! -e "$ready" ]]; then
+  touch "$release"
+  wait "$blocking_pid" || true
+  echo "blocking live deploy did not start" >&2
+  exit 1
+fi
+if timeout 10 wpcloud-site-git-deploy update cli-test --force >/tmp/live-concurrent-update.out 2>/tmp/live-concurrent-update.err; then
+  touch "$release"
+  wait "$blocking_pid" || true
+  echo "concurrent live deploy unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -F 'deployment already running' /tmp/live-concurrent-update.err
+touch "$release"
+wait "$blocking_pid"
+test "$(cat /tmp/live-blocking-update.status)" = "0"
+grep -F 'done:/srv/htdocs:' "$marker"
+test ! -e /srv/htdocs/.maintenance
+REMOTE
+log "## e2e-05b-concurrent-deploy-rejection"
+log "- overlapping deploy/update for one deployment id failed with deployment already running"
+
 mkdir -p "$fixture/assets/deep/nested" "$fixture/space dir" "$fixture/punctuation !@#" "$fixture/unicode-雪"
 printf 'deep\n' >"$fixture/assets/deep/nested/file.txt"
 printf 'space\n' >"$fixture/space dir/file with spaces.txt"

@@ -89,6 +89,7 @@ Current live coverage includes:
   current release.
 - `update --force` and `deploy --force` same-commit redeploys.
 - Hardlink reuse across forced same-commit releases.
+- Concurrent deployment rejection while another promotion is running.
 - Deploy-root positive, invalid, missing, clear, and restore behavior.
 - Init-time `--deploy-root` and init-time custom `--maintenance-file`.
 - Content change deploy.
