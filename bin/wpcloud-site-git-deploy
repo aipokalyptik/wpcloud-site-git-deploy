@@ -445,7 +445,7 @@ copy_worktree_to_incoming() {
 
   rsync_args=(-a --delete --exclude-from="$exclude_file")
   if [[ -n "$link_dest" ]]; then
-    rsync_args+=(--checksum --link-dest="$link_dest")
+    rsync_args+=(--checksum --no-times --link-dest="$link_dest")
   fi
   rsync "${rsync_args[@]}" "$deploy_source/" "$incoming/"
   rm -f "$exclude_file"

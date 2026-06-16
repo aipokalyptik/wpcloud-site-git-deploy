@@ -36,7 +36,7 @@ supports_rsync_link_dest() {
   mkdir -p "$source" "$basis" "$dest"
   printf 'probe\n' >"$source/file.txt"
   cp "$source/file.txt" "$basis/file.txt"
-  if rsync -a --checksum --link-dest="$basis" "$source/" "$dest/" >/dev/null 2>&1 &&
+  if rsync -a --checksum --no-times --link-dest="$basis" "$source/" "$dest/" >/dev/null 2>&1 &&
     [[ "$(inode_of "$basis/file.txt")" == "$(inode_of "$dest/file.txt")" ]]; then
     result=0
   fi
