@@ -78,6 +78,10 @@ cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
+cat >"$fake_bin/exchange-rename" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
 chmod +x "$fake_bin"/*
 
 export PATH="$fake_bin:$PATH"
@@ -91,6 +95,7 @@ HOME="$home_dir" "$cli" init site \
   --docroot "$docroot" \
   --deployment-id site \
   --default-ref main >/dev/null
+[[ ! -e "$home_dir/.wpcloud-site-git-deploy/bin/exchange-rename" ]] || fail "init should use exchange-rename from PATH when available"
 
 HOME="$home_dir" "$cli" auth site >"$tmpdir/auth-github.txt"
 key_path="$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
@@ -115,6 +120,7 @@ mtime_forced="$(stat -f '%m' "$key_path" 2>/dev/null || stat -c '%Y' "$key_path"
 
 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-ok.txt"
 assert_contains "OK config: deployment loaded" "$tmpdir/doctor-ok.txt"
+assert_contains "OK helper: exchange-rename available: $fake_bin/exchange-rename" "$tmpdir/doctor-ok.txt"
 assert_contains "OK ssh-key: private key is readable" "$tmpdir/doctor-ok.txt"
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-ok.txt"
 assert_contains "GIT_SSH_COMMAND=ssh -i $key_path -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$tmpdir/git.log"

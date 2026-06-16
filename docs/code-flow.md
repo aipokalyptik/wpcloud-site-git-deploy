@@ -13,7 +13,7 @@ flowchart TD
   C -->|init| I["cmd_init"]
   I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases, deploy-root"]
   I1 --> I2["ensure_state_dirs"]
-  I2 --> I3["ensure_helper: install exchange-rename if needed"]
+  I2 --> I3["ensure_helper: use managed helper, PATH helper, or install exchange-rename if needed"]
   I3 --> I4["Write deployment config under $HOME/.wpcloud-site-git-deploy/deployments"]
 
   C -->|config| CFG["cmd_config"]

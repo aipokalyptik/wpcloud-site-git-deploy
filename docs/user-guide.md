@@ -75,6 +75,10 @@ The installer writes:
 - `$HOME/.wpcloud-site-git-deploy/bin/wpcloud-site-git-deploy`
 - `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
 
+For system or chroot packaging, `exchange-rename` may also be provided anywhere
+in the site user's `PATH`. The CLI prefers the managed helper above when it
+exists, then falls back to the first executable `exchange-rename` on `PATH`.
+
 It also removes the obsolete
 `$HOME/.wpcloud-site-git-deploy/lib/remote-deploy.sh` file if an older install
 left one behind.

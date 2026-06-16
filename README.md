@@ -53,6 +53,10 @@ Installed runtime files:
 - `$HOME/.wpcloud-site-git-deploy/bin/wpcloud-site-git-deploy`
 - `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
 
+System or chroot installs may place `exchange-rename` anywhere in the site
+user's `PATH`; the CLI uses the managed helper above when present, otherwise
+it falls back to the first executable `exchange-rename` found on `PATH`.
+
 Runtime state created as you initialize and deploy sites:
 
 - `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`

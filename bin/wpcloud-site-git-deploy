@@ -174,9 +174,15 @@ git_lfs_with_auth() {
 
 ensure_helper() {
   local helper="$BIN_DIR/exchange-rename"
+  local path_helper
 
   if [[ -x "$helper" ]]; then
     printf '%s\n' "$helper"
+    return 0
+  fi
+
+  if path_helper="$(command -v exchange-rename 2>/dev/null)" && [[ -x "$path_helper" ]]; then
+    printf '%s\n' "$path_helper"
     return 0
   fi
 
