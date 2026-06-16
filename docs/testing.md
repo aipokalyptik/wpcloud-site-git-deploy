@@ -73,7 +73,7 @@ Current live coverage should include:
 - Public symlink invariant audit: all owned public symlinks are relative and
   resolve under `/srv/htdocs`.
 
-Current `main` at `f374c91` was validated by a full live matrix completed at
+Release `v1.1.0` was cut after a full live matrix completed at
 `2026-06-16T00:04:39Z`. It covered the scenarios above against the throwaway
 WP Cloud/Pressable site after the existing/imported deploy-key support and
 key-validation edge-case fixes.
