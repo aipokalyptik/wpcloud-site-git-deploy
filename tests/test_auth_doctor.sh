@@ -240,6 +240,30 @@ if HOME="$home_dir" "$cli" auth site --import-key "$encrypted_key" --force-new-k
   fail "auth --import-key should fail for a passphrase-protected key"
 fi
 assert_contains "private key cannot be used without prompting" "$tmpdir/auth-import-encrypted.txt"
+if [[ -e "$key_path.pub" && ! -s "$key_path.pub" ]]; then
+  fail "failed public key derivation must not leave an empty .pub file"
+fi
+
+printf 'SELF IMPORT PRIVATE KEY\n' >"$key_path"
+chmod 600 "$key_path"
+printf 'ssh-ed25519 old-pub wpcloud-test\n' >"$key_path.pub"
+if HOME="$home_dir" "$cli" auth site --import-key "$key_path" --force-new-key >"$tmpdir/auth-import-self.txt" 2>&1; then
+  fail "auth --import-key should fail cleanly when source is the managed key path"
+fi
+assert_contains "cannot import the managed deploy key onto itself" "$tmpdir/auth-import-self.txt"
+[[ -f "$key_path" ]] || fail "self import must not delete managed private key"
+[[ "$(cat "$key_path")" == "SELF IMPORT PRIVATE KEY" ]] || fail "self import must not modify managed private key"
+
+no_ssh_keygen_bin="$tmpdir/no-ssh-keygen-auth-bin"
+mkdir -p "$no_ssh_keygen_bin"
+for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp basename; do
+  command_path="$(command -v "$command_name")"
+  ln -s "$command_path" "$no_ssh_keygen_bin/$command_name"
+done
+if HOME="$home_dir" PATH="$no_ssh_keygen_bin" "$cli" auth site --use-key "$external_key" >"$tmpdir/auth-use-no-ssh-keygen.txt" 2>&1; then
+  fail "auth --use-key should fail clearly when ssh-keygen is missing"
+fi
+assert_contains "ssh-keygen is required to validate deploy keys" "$tmpdir/auth-use-no-ssh-keygen.txt"
 
 WPCLOUD_TEST_GIT_LS_REMOTE_STATUS=7 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-remote-fail.txt" && fail "doctor should fail when remote access fails"
 assert_contains "FAIL git-remote: remote access failed" "$tmpdir/doctor-remote-fail.txt"
@@ -287,7 +311,8 @@ for command_name in bash git rsync find flock sort comm cut grep readlink ln rm 
   command_path="$(command -v "$command_name")"
   ln -s "$command_path" "$no_keygen_bin/$command_name"
 done
-if HOME="$home_dir" PATH="$no_keygen_bin" "$cli" doctor site --offline >"$tmpdir/doctor-no-ssh-keygen.txt"; then
+if HOME="$home_dir" PATH="$no_keygen_bin" "$cli" doctor site --offline >"$tmpdir/doctor-no-ssh-keygen.txt" 2>&1; then
   fail "doctor should fail when ssh-keygen is missing"
 fi
 assert_contains "FAIL command: ssh-keygen is required" "$tmpdir/doctor-no-ssh-keygen.txt"
+assert_contains "FAIL ssh-key: ssh-keygen is required to validate deploy keys" "$tmpdir/doctor-no-ssh-keygen.txt"

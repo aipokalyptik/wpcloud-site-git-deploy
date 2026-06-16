@@ -685,10 +685,15 @@ private_key_public_key() {
   ssh-keygen -y -f "$path" </dev/null 2>/dev/null
 }
 
+require_ssh_keygen_for_keys() {
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
+}
+
 validate_existing_private_key() {
   local path="$1"
   local mode
 
+  require_ssh_keygen_for_keys
   [[ -f "$path" ]] || die "private key is missing: $path"
   [[ -r "$path" ]] || die "private key is not readable: $path"
   mode="$(private_key_mode "$path")"
@@ -701,9 +706,24 @@ validate_existing_private_key() {
 derive_public_key_file() {
   local private_key="$1"
   local public_key_path="$2"
+  local tmp
 
-  private_key_public_key "$private_key" >"$public_key_path" || die "private key cannot be used without prompting or is not a valid private key: $private_key"
+  require_ssh_keygen_for_keys
+  tmp="$(mktemp "${public_key_path}.tmp.XXXXXX")"
+  if ! private_key_public_key "$private_key" >"$tmp"; then
+    rm -f "$tmp"
+    die "private key cannot be used without prompting or is not a valid private key: $private_key"
+  fi
+  mv "$tmp" "$public_key_path"
   chmod 644 "$public_key_path"
+}
+
+same_file() {
+  local left="$1"
+  local right="$2"
+
+  [[ -e "$left" && -e "$right" ]] || return 1
+  [[ "$(cd "$(dirname "$left")" && pwd -P)/$(basename "$left")" == "$(cd "$(dirname "$right")" && pwd -P)/$(basename "$right")" ]]
 }
 
 doctor_failures=0
@@ -799,6 +819,9 @@ cmd_auth() {
     printf 'Using existing deploy key: %s\n' "$key_path"
   elif [[ -n "$import_key" ]]; then
     validate_existing_private_key "$import_key"
+    if same_file "$import_key" "$key_path"; then
+      die "cannot import the managed deploy key onto itself: $key_path"
+    fi
     if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
       die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
     fi
@@ -927,7 +950,9 @@ cmd_doctor() {
       doctor_fail ssh-key "private key permissions are too open: $mode"
     else
       doctor_ok ssh-key "private key is readable"
-      if private_key_public_key "$ssh_key_path" >/dev/null; then
+      if ! command -v ssh-keygen >/dev/null 2>&1; then
+        doctor_fail ssh-key "ssh-keygen is required to validate deploy keys"
+      elif private_key_public_key "$ssh_key_path" >/dev/null; then
         if [[ -f "$ssh_key_path.pub" ]]; then
           doctor_ok ssh-key "public key exists"
         else
