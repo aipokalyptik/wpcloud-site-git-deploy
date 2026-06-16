@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.1.1"
 readonly DEFAULT_KEEP_RELEASES="3"
 readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
 
