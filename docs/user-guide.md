@@ -171,6 +171,21 @@ replace it explicitly:
 wpcloud-site-git-deploy auth site --import-key ~/.ssh/id_ed25519 --force-new-key
 ```
 
+### Rotate A Generated Deploy Key
+
+Use `--force-new-key` by itself to replace the tool-managed generated key:
+
+```bash
+wpcloud-site-git-deploy auth site --force-new-key
+```
+
+Add the new printed public key to the repository host, remove the old deploy
+key from the host, then verify:
+
+```bash
+wpcloud-site-git-deploy doctor site
+```
+
 ### Verify Access
 
 After adding the public key to the Git host:
@@ -336,6 +351,29 @@ keep_releases=5
 ```
 
 Then run the next deploy. Pruning happens after successful deploy promotion.
+
+## Changing Initialized Settings
+
+The `config` command only manages `deploy_root`. Other initialized settings are
+stored in:
+
+```text
+$HOME/.wpcloud-site-git-deploy/deployments/<name>.env
+```
+
+Edit that file when you need to change:
+
+- `repo_url`
+- `docroot`
+- `deployment_id`
+- `default_ref`
+- `keep_releases`
+
+After changing `repo_url`, run `auth` and `doctor` again because repository
+access may need a different deploy key. After changing `deployment_id`, the CLI
+starts using a different docroot namespace; the old namespace and public
+symlinks are not automatically removed. Reinitializing with a new `<name>` is
+often clearer when changing both repository identity and deployment ownership.
 
 ## Multiple Deployments In One Docroot
 

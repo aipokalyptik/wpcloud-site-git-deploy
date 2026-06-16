@@ -76,6 +76,21 @@ If the managed key already exists:
 wpcloud-site-git-deploy auth site --import-key ~/.ssh/site_deploy_key --force-new-key
 ```
 
+## Rotate A Generated Deploy Key
+
+Use this when the CLI created the key and you want to replace it.
+
+```bash
+wpcloud-site-git-deploy auth site --force-new-key
+```
+
+Add the new printed public key to the repository host, remove the old deploy
+key from the host, and verify:
+
+```bash
+wpcloud-site-git-deploy doctor site
+```
+
 ## Keep A Site Fresh With Cron
 
 `update` is safe for cron because it is a no-op when the fetched commit and
@@ -390,6 +405,13 @@ wpcloud-site-git-deploy init site \
   --default-ref deploy-output
 ```
 
+Before the first `update`, configure repository access and validate it:
+
+```bash
+wpcloud-site-git-deploy auth site
+wpcloud-site-git-deploy doctor site
+```
+
 Then deploy with:
 
 ```bash
@@ -476,6 +498,39 @@ keep_releases=10
 
 The next successful deploy applies pruning.
 
+## Change Repository URL Or Default Branch
+
+The `config` command only manages deploy roots. To change the repository URL,
+docroot, deployment ID, default branch, or retention, edit:
+
+```text
+$HOME/.wpcloud-site-git-deploy/deployments/site.env
+```
+
+Example default branch change:
+
+```bash
+default_ref=release
+```
+
+Example repository URL change:
+
+```bash
+repo_url=git@github.com:example/new-site-repo.git
+```
+
+After changing `repo_url`, run:
+
+```bash
+wpcloud-site-git-deploy auth site
+wpcloud-site-git-deploy doctor site
+```
+
+Changing `deployment_id` points the CLI at a different docroot namespace. It
+does not remove the old namespace or unpublish existing public symlinks. For
+large identity changes, creating a new deployment name with `init` is usually
+easier to reason about.
+
 ## Git LFS Repository
 
 Install or provide `git-lfs` in the site user's `PATH`, then deploy normally:
@@ -556,6 +611,15 @@ wpcloud-site-git-deploy auth site --remove --purge-key
 rm -f "$HOME/.wpcloud-site-git-deploy/deployments/site.env"
 ```
 
-Do not manually delete active release paths under `/srv/htdocs` unless you have
-confirmed which public paths are owned by that deployment and have a rollback
-plan.
+This stops CLI management for that `<name>`, but it does not unpublish the site
+or take any public path down. The last deployed release continues serving
+through the existing public symlinks, the
+`/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/` namespace remains
+on disk, and the repo cache under
+`$HOME/.wpcloud-site-git-deploy/repos/<name>/` is left in place. Temporary
+state under `$HOME/.wpcloud-site-git-deploy/tmp/` may also remain if earlier
+work was interrupted.
+
+There is intentionally no clean teardown or unpublish command. Do not manually
+delete active release paths under `/srv/htdocs` unless you have confirmed which
+public paths are owned by that deployment and have a rollback plan.
