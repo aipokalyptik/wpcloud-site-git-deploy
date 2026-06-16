@@ -60,7 +60,8 @@ flowchart TD
   PR --> RDE["run_engine_subshell -> cmd_remote_deploy --release-id"]
   RDE --> ERQ["require_remote_capabilities"]
   ERQ --> ELOCK["Acquire deploy lock"]
-  ELOCK --> EMNT["Clean stale owned maintenance marker and create current marker unless disabled"]
+  ELOCK -->|busy| EBUSY["Fail: deployment already running"]
+  ELOCK -->|acquired| EMNT["Clean stale owned maintenance marker and create current marker unless disabled"]
   EMNT --> EPCT["prepare_claim_transition"]
   EPCT --> EPCT1["discover_boundary_claims"]
   EPCT1 --> EPCT2["discover_protected_anchors"]
@@ -94,7 +95,8 @@ flowchart TD
   RB4 --> RBR
   RBR --> RRC["require_remote_capabilities"]
   RRC --> RLOCK["Acquire deploy lock"]
-  RLOCK --> RMNT1["Clean stale owned maintenance marker and create rollback marker unless disabled"]
+  RLOCK -->|busy| RBUSY["Fail: deployment already running"]
+  RLOCK -->|acquired| RMNT1["Clean stale owned maintenance marker and create rollback marker unless disabled"]
   RMNT1 --> RPCT["prepare_claim_transition for existing release"]
   RPCT --> RACT["apply_claim_transition"]
   RACT --> RACT1["switch_current atomically and clean removed claims"]
@@ -131,6 +133,10 @@ dispatcher. Promotion and rollback call the internal engine through
 `run_engine_subshell` so engine exits remain contained and caller cleanup paths
 stay live. The hidden `__remote-deploy` command calls `cmd_remote_deploy`
 directly for tests and audits.
+
+The deploy lock is non-blocking: if another deploy, update, or rollback is
+already promoting the same deployment id, the later command fails with
+`deployment already running` instead of waiting.
 
 The production entry points are `init`, `config`, `deploy`, `update`,
 `rollback`, `releases`, `branches`, `tags`, `commits`, `status`, `auth`, and
