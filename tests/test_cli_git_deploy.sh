@@ -24,6 +24,20 @@ inode_of() {
   stat -c '%i' "$1"
 }
 
+supports_hardlinks() {
+  local dir="$1"
+  local left="$dir/.hardlink-probe-left.$$"
+  local right="$dir/.hardlink-probe-right.$$"
+
+  printf 'probe\n' >"$left"
+  if ln "$left" "$right" 2>/dev/null; then
+    rm -f "$left" "$right"
+    return 0
+  fi
+  rm -f "$left" "$right"
+  return 1
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="$repo_root/bin/wpcloud-site-git-deploy"
 tmpdir="$(mktemp -d)"
@@ -132,7 +146,8 @@ grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy 
 [[ -L "$docroot/index.html" ]] || fail "published index should be a symlink"
 index_target="$(readlink "$docroot/index.html")"
 [[ "$index_target" == .github-ssh-deploy/deployments/site/current/index.html ]] || fail "unexpected public symlink target: $index_target"
-assert_not_contains "$home_dir" <(printf '%s\n' "$index_target")
+printf '%s\n' "$index_target" >"$tmpdir/index-target.txt"
+assert_not_contains "$home_dir" "$tmpdir/index-target.txt"
 
 conflict_home_dir="$tmpdir/conflict-home"
 mkdir -p "$conflict_home_dir"
@@ -160,7 +175,11 @@ second_release="${second_deploy%% *}"
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "branch deploy did not publish feature content"
 first_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/assets/app.txt"
 second_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/assets/app.txt"
-[[ "$(inode_of "$first_asset")" == "$(inode_of "$second_asset")" ]] || fail "unchanged asset should be hardlinked across releases"
+if supports_hardlinks "$docroot"; then
+  [[ "$(inode_of "$first_asset")" == "$(inode_of "$second_asset")" ]] || fail "unchanged asset should be hardlinked across releases"
+else
+  echo "hardlinks not supported in test docroot; skipping hardlink inode assertion" >&2
+fi
 first_index="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/index.html"
 second_index="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/index.html"
 [[ "$(inode_of "$first_index")" != "$(inode_of "$second_index")" ]] || fail "changed file should not be hardlinked across releases"
