@@ -107,15 +107,15 @@ assert_contains "repo_url=git@github.com:example/private-site.git" "$config_file
 assert_contains "Add this public key as a read-only GitHub deploy key" "$tmpdir/auth-github.txt"
 assert_contains "ssh-ed25519 PUBLICKEY wpcloud-test" "$tmpdir/auth-github.txt"
 
-mtime_before="$(stat -f '%m' "$key_path" 2>/dev/null || stat -c '%Y' "$key_path")"
+mtime_before="$(stat -c '%Y' "$key_path")"
 HOME="$home_dir" "$cli" auth site >"$tmpdir/auth-reuse.txt"
-mtime_after="$(stat -f '%m' "$key_path" 2>/dev/null || stat -c '%Y' "$key_path")"
+mtime_after="$(stat -c '%Y' "$key_path")"
 [[ "$mtime_before" == "$mtime_after" ]] || fail "auth should reuse existing key by default"
 assert_contains "Reusing existing deploy key" "$tmpdir/auth-reuse.txt"
 
 sleep 1
 HOME="$home_dir" "$cli" auth site --force-new-key >"$tmpdir/auth-force.txt"
-mtime_forced="$(stat -f '%m' "$key_path" 2>/dev/null || stat -c '%Y' "$key_path")"
+mtime_forced="$(stat -c '%Y' "$key_path")"
 [[ "$mtime_forced" != "$mtime_after" ]] || fail "auth --force-new-key should replace existing key"
 
 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-ok.txt"
@@ -202,7 +202,7 @@ assert_contains "ssh-ed25519 DERIVED-site_ed25519 wpcloud-test" "$tmpdir/auth-im
 [[ -f "$key_path.pub" ]] || fail "auth --import-key should derive managed public key"
 [[ "$(cat "$key_path")" == "IMPORTED PRIVATE KEY" ]] || fail "auth --import-key should copy private key content"
 assert_contains "ssh-ed25519 DERIVED-site_ed25519 wpcloud-test" "$key_path.pub"
-imported_mode="$(stat -f '%Lp' "$key_path" 2>/dev/null || stat -c '%a' "$key_path")"
+imported_mode="$(stat -c '%a' "$key_path")"
 [[ "$imported_mode" == "600" ]] || fail "imported key should be chmod 600, got $imported_mode"
 if HOME="$home_dir" "$cli" auth site --import-key "$import_source" >"$tmpdir/auth-import-overwrite.txt" 2>&1; then
   fail "auth --import-key should not overwrite a managed key without --force-new-key"

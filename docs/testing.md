@@ -2,7 +2,7 @@
 
 This project has two verification layers:
 
-- Local compatibility tests in `tests/run.sh`.
+- Linux local compatibility tests in `tests/run.sh`.
 - A destructive live E2E matrix against a throwaway WP Cloud or Pressable site
   for release-critical changes.
 
@@ -11,18 +11,21 @@ Do not store site credentials in this repository. Keep local secrets in
 
 ## Local Tests
 
-Run the full local suite from the repository root:
+Run the full local suite from the repository root on a Linux host:
 
 ```bash
 tests/run.sh
 ```
 
+This can be a production-like throwaway site over SSH, Linux CI, or a Linux
+container/VM. Native macOS runs exit early with guidance instead of attempting
+partial shimmed coverage.
+
 The suite runs:
 
 - `tests/test_cli_git_deploy.sh`, a black-box deploy test using local Git
-  repositories, fake Linux-only command shims where needed, cached inspection
-  checks, rollback, worktree cleanup, no-op deploys, deploy-root behavior,
-  hardlink reuse, and Git LFS behavior.
+  repositories, cached inspection checks, rollback, worktree cleanup, no-op
+  deploys, deploy-root behavior, hardlink reuse, and Git LFS behavior.
 - `tests/test_auth_doctor.sh`, a setup-focused test for deploy-key generation,
   existing-key use, managed key import, auth removal, GitHub HTTPS-to-SSH
   conversion, generic SSH guidance, key validation failures, doctor

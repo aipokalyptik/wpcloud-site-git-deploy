@@ -3,6 +3,12 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "tests/run.sh requires Linux/GNU tooling." >&2
+  echo "Run it on the site host, Linux CI, a Linux container/VM, or use the throwaway WP Cloud/Pressable E2E site." >&2
+  exit 64
+fi
+
 "$repo_root/tests/test_cli_git_deploy.sh"
 "$repo_root/tests/test_auth_doctor.sh"
 "$repo_root/tests/test_remote_invariants.sh"

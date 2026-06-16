@@ -28,22 +28,6 @@ cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-cat >"$fake_bin/mv" <<'SH'
-#!/usr/bin/env bash
-if [[ "${1:-}" == "-T" ]]; then
-  shift
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-  fi
-  python3 - "$1" "$2" <<'PY'
-import os
-import sys
-os.rename(sys.argv[1], sys.argv[2])
-PY
-  exit 0
-fi
-exec /bin/mv "$@"
-SH
 cat >"$fake_bin/ln" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -63,13 +47,11 @@ fi
 exec /usr/bin/find "$@"
 SH
 chmod +x "$fake_bin/flock"
-chmod +x "$fake_bin/mv"
 chmod +x "$fake_bin/ln"
 chmod +x "$fake_bin/find"
 export PATH="$fake_bin:$PATH"
 export WPCLOUD_SITE_GIT_DEPLOY_FIND_LOG="$find_log"
 export WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$docroot"
-export WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK=1
 export GITHUB_SSH_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
 export GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
 

@@ -218,28 +218,7 @@ ensure_helper() {
     return 0
   fi
 
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    # Local macOS tests cannot execute the committed Linux renameat2 helper.
-    # The generated shim keeps tests focused on deploy semantics; installed
-    # Linux/WP Cloud runtimes use the static helper below.
-    cat >"$helper" <<-'SH'
-	#!/usr/bin/env bash
-	set -euo pipefail
-	python3 - "$1" "$2" <<-'PY'
-	import os
-	import sys
-
-	left, right = sys.argv[1], sys.argv[2]
-	tmp = f"{left}.exchange.{os.getpid()}"
-	os.rename(left, tmp)
-	os.rename(right, left)
-	os.rename(tmp, right)
-	PY
-	SH
-    chmod 755 "$helper"
-    printf '%s\n' "$helper"
-    return 0
-  fi
+  [[ "$(uname -s)" == "Linux" ]] || die "exchange helper installation requires Linux; run on the site host, Linux CI, or a Linux container/VM"
 
   [[ -f "$HELPER_SOURCE" ]] || die "exchange helper source binary not found: $HELPER_SOURCE"
   cp "$HELPER_SOURCE" "$helper"
@@ -582,26 +561,8 @@ current_release_matches() {
   [[ "$metadata_commit" == "$commit" && "$metadata_deploy_root" == "$expected_deploy_root" ]]
 }
 
-remote_deploy_env() {
-  local empty_boundaries="$TMP_DIR/empty-boundaries.$$"
-  local empty_protected="$TMP_DIR/empty-protected.$$"
-
-  : >"$empty_boundaries"
-  : >"$empty_protected"
-
-  # macOS development machines do not ship GNU find/flock, while WP Cloud does.
-  # These knobs are only for local tests; production SSH sessions should use the
-  # real Linux commands and dynamic docroot probes.
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    export WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK=1
-    export GITHUB_SSH_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
-    export GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
-  fi
-}
-
 run_engine_subshell() {
   (
-    remote_deploy_env
     cmd_remote_deploy "$@"
   )
 }
@@ -745,11 +706,7 @@ repo_url_supports_auth() {
 private_key_mode() {
   local path="$1"
 
-  if stat -f '%Lp' "$path" >/dev/null 2>&1; then
-    stat -f '%Lp' "$path"
-  else
-    stat -c '%a' "$path"
-  fi
+  stat -c '%a' "$path"
 }
 
 private_key_public_key() {
@@ -1474,14 +1431,10 @@ require_remote_capabilities() {
   # Later pruning depends on GNU find's timestamp output, and sticky/protected
   # discovery uses GNU-style predicates. Probing -printf is the cheap proxy for
   # GNU find as a whole.
-  if [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" != "1" ]]; then
-    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
-    if ! find "$probe_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >/dev/null 2>&1; then
-      rm -rf -- "$probe_dir"
-      engine_die "GNU find with -printf is required"
-    fi
-  else
-    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
+  if ! find "$probe_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >/dev/null 2>&1; then
+    rm -rf -- "$probe_dir"
+    engine_die "GNU find with -printf is required"
   fi
 
   : >"$probe_dir/source"
@@ -1545,18 +1498,7 @@ assert_public_symlinks_under_docroot() {
 resolve_path() {
   local path="$1"
 
-  if readlink -f "$path" >/dev/null 2>&1; then
-    readlink -f "$path"
-    return 0
-  fi
-
-  [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" == "1" ]] || engine_die "readlink -f is required"
-  python3 - "$path" <<-'PY'
-	import os
-	import sys
-
-	print(os.path.realpath(sys.argv[1]))
-	PY
+  readlink -f "$path"
 }
 
 assert_claim_symlinks_under_docroot() {

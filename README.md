@@ -35,8 +35,8 @@ On the site SSH user:
 - Git LFS only when the deployed repository has LFS-tracked paths
 
 The committed helper binary is Linux amd64 and uses
-`renameat2(RENAME_EXCHANGE)`. macOS is supported for local tests through test
-shims, not as a production deploy target.
+`renameat2(RENAME_EXCHANGE)`. Production deploys and local tests require
+Linux/GNU tooling; macOS is an editing environment only.
 
 ## Install
 
@@ -282,7 +282,10 @@ metadata.
 tests/run.sh
 ```
 
-Linux CI exercises the real GNU tooling and static `renameat2(RENAME_EXCHANGE)` helper. macOS local tests use small shims for Linux-only command behavior.
+Run tests on a Linux host, Linux CI, a Linux container/VM, or a throwaway WP
+Cloud/Pressable site. Native macOS test execution is not supported because the
+deploy path depends on GNU tools and the Linux `renameat2(RENAME_EXCHANGE)`
+helper.
 
 Before committing documentation-only changes, run:
 

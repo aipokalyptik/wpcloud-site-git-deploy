@@ -21,11 +21,7 @@ assert_not_contains() {
 }
 
 inode_of() {
-  if stat -f '%i' "$1" >/dev/null 2>&1; then
-    stat -f '%i' "$1"
-  else
-    stat -c '%i' "$1"
-  fi
+  stat -c '%i' "$1"
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,24 +72,7 @@ cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-cat >"$fake_bin/mv" <<'SH'
-#!/usr/bin/env bash
-if [[ "${1:-}" == "-T" ]]; then
-  shift
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-  fi
-  python3 - "$1" "$2" <<'PY'
-import os
-import sys
-os.rename(sys.argv[1], sys.argv[2])
-PY
-  exit 0
-fi
-exec /bin/mv "$@"
-SH
 chmod +x "$fake_bin/flock"
-chmod +x "$fake_bin/mv"
 chmod +x "$fake_bin/git"
 export PATH="$fake_bin:$PATH"
 
