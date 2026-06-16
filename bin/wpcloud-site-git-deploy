@@ -909,11 +909,6 @@ cmd_auth() {
     fi
   fi
 
-  if [[ "$key_path" == "$KEYS_DIR"/* ]]; then
-    mkdir -p "$KEYS_DIR"
-    chmod 700 "$KEYS_DIR"
-  fi
-
   ssh_key_path="$key_path"
   write_config "$name"
   host="$(repo_host_from_url "$repo_url" || true)"
@@ -965,13 +960,18 @@ cmd_doctor() {
     return 1
   fi
 
-  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat ssh-keygen; do
+  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat; do
     if command -v "$command_name" >/dev/null 2>&1; then
       doctor_ok command "$command_name found"
     else
       doctor_fail command "$command_name is required"
     fi
   done
+  if command -v ssh-keygen >/dev/null 2>&1; then
+    doctor_ok command "ssh-keygen found"
+  else
+    doctor_warn command "ssh-keygen not found; auth and configured key validation will be unavailable"
+  fi
 
   if [[ -d "$docroot" ]]; then
     doctor_ok docroot "exists: $docroot"
@@ -998,7 +998,7 @@ cmd_doctor() {
   fi
 
   if [[ -z "${ssh_key_path:-}" ]]; then
-    doctor_fail ssh-key "no deploy key configured; run wpcloud-site-git-deploy auth $name"
+    doctor_warn ssh-key "no deploy key configured; Git will use default credentials or public repository access"
   elif [[ ! -f "$ssh_key_path" ]]; then
     doctor_fail ssh-key "private key is missing: $ssh_key_path"
   elif [[ ! -r "$ssh_key_path" ]]; then
@@ -1038,6 +1038,8 @@ cmd_doctor() {
     doctor_warn git-remote "skipped remote access check because --offline was provided"
   elif git_with_auth ls-remote "$repo_url" HEAD >/dev/null 2>&1; then
     doctor_ok git-remote "remote access succeeded"
+  elif [[ -z "${ssh_key_path:-}" ]]; then
+    doctor_fail git-remote "remote access failed without a configured deploy key; run auth for private SSH repositories or check repository access"
   else
     doctor_fail git-remote "remote access failed; add the deploy key to the repository host or check repository access"
   fi

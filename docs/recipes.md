@@ -10,10 +10,11 @@ export PATH="$HOME/.wpcloud-site-git-deploy/bin:$PATH"
 Use `/srv/htdocs` for the docroot in examples. Do not use `~/htdocs` in
 configuration, even if your host exposes it as a symlink.
 
-## One-Time Setup For A GitHub Repository
+## One-Time Setup For A Git Repository
 
-Use this when the deployable repository is on GitHub and you want the CLI to
-create the deploy key.
+Use this when the deployable repository should be read with an SSH deploy key
+managed by the CLI. The example uses GitHub, but the same flow works with any
+Git provider that supports read-only deploy keys.
 
 ```bash
 wpcloud-site-git-deploy init site \
@@ -26,7 +27,7 @@ wpcloud-site-git-deploy init site \
 wpcloud-site-git-deploy auth site
 ```
 
-Add the printed public key to GitHub:
+Add the printed public key to the repository host. On GitHub:
 
 1. Open the repository on GitHub.
 2. Go to Settings, then Deploy keys.
@@ -39,6 +40,14 @@ Verify:
 wpcloud-site-git-deploy doctor site
 wpcloud-site-git-deploy update site
 ```
+
+For non-GitHub providers, prefer the provider's SSH URL at `init` time, such as
+`git@git.example.com:team/site-content.git`. GitHub HTTPS URLs are a
+convenience exception: `auth` converts them to SSH before storing the key path.
+
+If the repository is public HTTPS, local, or already readable through the site
+user's default Git credentials, skip `auth` and run `doctor`; it will warn that
+no tool-managed key is configured and then verify the repository access.
 
 ## Use An Existing Deploy Key
 

@@ -125,8 +125,11 @@ assert_contains "OK ssh-key: private key is readable" "$tmpdir/doctor-ok.txt"
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-ok.txt"
 assert_contains "GIT_SSH_COMMAND=ssh -i $key_path -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$tmpdir/git.log"
 
+: >"$tmpdir/git.log"
 HOME="$home_dir" "$cli" auth site --verify >"$tmpdir/auth-verify.txt"
 assert_contains "Verified remote access for git@github.com:example/private-site.git" "$tmpdir/auth-verify.txt"
+ls_remote_count="$(grep -c '^git ls-remote git@github.com:example/private-site.git HEAD ' "$tmpdir/git.log")"
+[[ "$ls_remote_count" == "1" ]] || fail "auth --verify should run exactly one remote check; saw $ls_remote_count"
 
 if HOME="$home_dir" "$cli" auth site --remove --verify >"$tmpdir/auth-remove-bad.txt" 2>&1; then
   fail "auth --remove --verify should fail"
@@ -139,9 +142,10 @@ assert_not_contains "ssh_key_path=" "$config_file"
 [[ -f "$key_path" ]] || fail "auth --remove should preserve private key by default"
 [[ -f "$key_path.pub" ]] || fail "auth --remove should preserve public key by default"
 : >"$tmpdir/git.log"
-HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-no-key.txt" || true
-assert_contains "FAIL ssh-key: no deploy key configured" "$tmpdir/doctor-no-key.txt"
-HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-no-key-remote.txt" || true
+HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-no-key.txt"
+assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-no-key.txt"
+HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-no-key-remote.txt"
+assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-no-key-remote.txt"
 assert_contains "git ls-remote git@github.com:example/private-site.git HEAD GIT_SSH_COMMAND=" "$tmpdir/git.log"
 
 HOME="$home_dir" "$cli" auth site >/dev/null
@@ -297,6 +301,20 @@ if HOME="$bad_home" "$cli" auth bad >"$tmpdir/auth-bad.txt" 2>&1; then
   fail "auth should reject generic HTTPS remotes"
 fi
 assert_contains "generic HTTPS repository URLs cannot be configured for deploy keys automatically" "$tmpdir/auth-bad.txt"
+HOME="$bad_home" "$cli" doctor bad >"$tmpdir/doctor-generic-https.txt"
+assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-generic-https.txt"
+assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-generic-https.txt"
+no_keygen_public_bin="$tmpdir/no-keygen-public-bin"
+mkdir -p "$no_keygen_public_bin"
+for command_name in bash rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp; do
+  command_path="$(command -v "$command_name")"
+  ln -s "$command_path" "$no_keygen_public_bin/$command_name"
+done
+ln -s "$fake_bin/git" "$no_keygen_public_bin/git"
+HOME="$bad_home" PATH="$no_keygen_public_bin" "$cli" doctor bad >"$tmpdir/doctor-generic-https-no-keygen.txt"
+assert_contains "WARN command: ssh-keygen not found" "$tmpdir/doctor-generic-https-no-keygen.txt"
+assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-generic-https-no-keygen.txt"
+assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-generic-https-no-keygen.txt"
 
 missing_home="$tmpdir/missing-home"
 missing_docroot="$tmpdir/missing-docroot"
@@ -306,10 +324,8 @@ HOME="$missing_home" "$cli" init missing \
   --docroot "$missing_docroot" \
   --deployment-id missing \
   --default-ref main >/dev/null
-if HOME="$missing_home" PATH="/usr/bin:/bin" "$cli" doctor missing --offline >"$tmpdir/doctor-missing.txt"; then
-  fail "doctor should fail when auth has not configured an ssh key"
-fi
-assert_contains "FAIL ssh-key: no deploy key configured" "$tmpdir/doctor-missing.txt"
+HOME="$missing_home" PATH="/usr/bin:/bin" "$cli" doctor missing --offline >"$tmpdir/doctor-missing.txt"
+assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-missing.txt"
 
 no_keygen_bin="$tmpdir/no-keygen-bin"
 mkdir -p "$no_keygen_bin"
@@ -320,5 +336,5 @@ done
 if HOME="$home_dir" PATH="$no_keygen_bin" "$cli" doctor site --offline >"$tmpdir/doctor-no-ssh-keygen.txt" 2>&1; then
   fail "doctor should fail when ssh-keygen is missing"
 fi
-assert_contains "FAIL command: ssh-keygen is required" "$tmpdir/doctor-no-ssh-keygen.txt"
+assert_contains "WARN command: ssh-keygen not found" "$tmpdir/doctor-no-ssh-keygen.txt"
 assert_contains "FAIL ssh-key: ssh-keygen is required to validate deploy keys" "$tmpdir/doctor-no-ssh-keygen.txt"

@@ -105,8 +105,10 @@ Set up repository access:
 wpcloud-site-git-deploy auth site
 ```
 
-For GitHub HTTPS URLs, `auth` converts the stored URL to SSH form. Add the
-printed public key to the repository as a read-only deploy key, then validate:
+For GitHub HTTPS URLs, `auth` converts the stored URL to SSH form. For other
+Git providers, initialize with that provider's SSH URL before running `auth`.
+Add the printed public key to the repository as a read-only deploy key, then
+validate:
 
 ```bash
 wpcloud-site-git-deploy doctor site
@@ -146,6 +148,8 @@ $HOME/.wpcloud-site-git-deploy/keys/site_ed25519
 
 Add the printed public key to your Git host as a read-only deploy key. For
 GitHub, add it under repository settings, not under your personal account keys.
+For non-GitHub hosts, initialize with the provider's SSH URL, for example
+`git@git.example.com:team/site-content.git`.
 
 ### Use An Existing Key In Place
 
@@ -201,6 +205,11 @@ wpcloud-site-git-deploy doctor site
 
 `doctor` checks local commands, config, docroot access, helper availability,
 key permissions, public-key derivation, and remote repository access.
+
+If the repository is public HTTPS, local, or already accessible through the
+site user's default Git credentials, `auth` is optional. `doctor` will warn
+that no tool-managed key is configured, then verify remote access with normal
+Git behavior.
 
 ### Remove Key Configuration
 
@@ -462,8 +471,10 @@ wpcloud-site-git-deploy doctor site --offline
 
 Common failures:
 
-- `no deploy key configured`: run `auth`, add the printed public key to the
-  repository host, then run `doctor`.
+- `no deploy key configured`: informational warning. For private SSH remotes,
+  run `auth`, add the printed public key to the repository host, then run
+  `doctor`. For public HTTPS, local, or pre-authenticated remotes, confirm the
+  following `git-remote` check succeeds.
 - `remote access failed`: the key is not on the Git host, the repo URL is
   wrong, or the key lacks repository access.
 - `private key permissions are too open`: run `chmod 600 <key>`.
@@ -474,8 +485,9 @@ Common failures:
   subdirectory.
 - `claim owned by another deployment`: two deployment namespaces overlap.
   Split the paths so each deployment owns a distinct subtree.
-- `could not read Username for 'https://github.com'`: a private HTTPS repo or
-  submodule needs credentials. Prefer SSH deploy keys for unattended deploys.
+- `could not read Username for 'https://...'`: a private HTTPS repo or
+  submodule needs credentials. Prefer SSH deploy keys for unattended deploys,
+  or configure non-interactive HTTPS credentials for the site user.
 
 ## Command Reference
 

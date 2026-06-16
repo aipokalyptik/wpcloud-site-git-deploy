@@ -81,6 +81,8 @@ wpcloud-site-git-deploy init site \
 wpcloud-site-git-deploy auth site
 # Add the printed public key to the repository as a read-only deploy key.
 # For GitHub HTTPS URLs, auth stores the equivalent SSH URL.
+# For public HTTPS or already-authenticated remotes, doctor can validate access
+# without a tool-managed deploy key.
 wpcloud-site-git-deploy doctor site
 
 wpcloud-site-git-deploy deploy site --branch main
@@ -149,7 +151,7 @@ Command output is script-friendly:
 
 This tool runs as the site SSH user, so Git credentials live in that user’s `$HOME`, outside the HTTP request context.
 
-For SSH remotes, run:
+For SSH remotes that should use a deploy key, run:
 
 ```bash
 wpcloud-site-git-deploy auth site
@@ -159,7 +161,9 @@ wpcloud-site-git-deploy auth site
 `$HOME/.wpcloud-site-git-deploy/keys/site_ed25519`, stores that path in the
 deployment config, and prints the public key to add to the repository host as a
 read-only deploy key. For GitHub HTTPS URLs, it converts the stored repository
-URL to the equivalent SSH URL before writing the key path.
+URL to the equivalent SSH URL before writing the key path. For other Git hosts,
+initialize with the provider's SSH URL, for example
+`git@git.example.com:team/site-content.git`.
 
 To use an existing private key in place, keep the file under your own control
 and point the deployment at it:
@@ -190,6 +194,11 @@ wpcloud-site-git-deploy doctor site
 The CLI does not edit `~/.ssh/config`. When `ssh_key_path` is configured, Git
 network operations run with a tool-managed `GIT_SSH_COMMAND` that pins the
 deployment to that key.
+
+If the repository is public HTTPS, local, or already accessible through the
+site user's default Git credentials, `auth` is optional. Run `doctor`; it will
+warn that no tool-managed key is configured, then verify remote access with
+normal Git behavior.
 
 To stop using the configured deploy key:
 
