@@ -82,10 +82,15 @@ it can validate untagged local changes before a release. It writes evidence to
 Current live coverage includes:
 
 - Baseline deploy.
+- Default exclude coverage for tracked `.env`, `.github/`, `.DS_Store`,
+  `.gitignore`, `.gitattributes`, `.gitmodules`, `.aws/`, `.ssh/`, `.npmrc`,
+  `.pypirc`, and `.netrc` paths.
 - No-op update when the resolved commit and deploy inputs already match the
   current release.
 - `update --force` and `deploy --force` same-commit redeploys.
+- Hardlink reuse across forced same-commit releases.
 - Deploy-root positive, invalid, missing, clear, and restore behavior.
+- Init-time `--deploy-root` and init-time custom `--maintenance-file`.
 - Content change deploy.
 - Configured post-deploy hook execution.
 - One-run `--post-deploy` override behavior.
@@ -95,21 +100,31 @@ Current live coverage includes:
 - `maintenance_file=none` behavior.
 - Preservation of a non-owned pre-existing maintenance file.
 - Stale tool-owned maintenance marker cleanup during rollback.
+- Custom configured maintenance file behavior.
 - Complex path deploy.
 - File removal.
 - File-to-directory and directory-to-file swaps.
 - Symlink deploy.
 - Git LFS add and remove.
-- Shared WordPress path rejection for `wp-content/uploads` and `.maintenance`.
+- Shared WordPress path rejection for `wp-content/uploads`,
+  `wp-content/cache`, `wp-content/upgrade`, `wp-content/blogs.dir`, and
+  `.maintenance`.
 - Public submodule add and remove.
 - Private submodule failure, followed by recovery after removal.
 - Protected anchor rejection, followed by recovery.
+- Explicit `deploy --tag` and `deploy --commit`.
 - Layered second deployment.
 - Foreign-layer conflict rejection, followed by recovery.
-- Auth removal and managed-key purge behavior.
-- Rollback, release listing, branch/tag/commit inspection, and retention.
+- Generated deploy-key setup, `auth --verify`, offline and online `doctor`,
+  external `auth --use-key`, managed `auth --import-key`, generated-key
+  rotation, auth removal, and managed-key purge behavior.
+- Explicit `rollback --to`, missing rollback target rejection, release listing,
+  branch/tag/commit inspection with and without `--fetch`, list limits, and
+  retention.
 - Public symlink invariant audit: all owned public symlinks are relative and
   resolve under `/srv/htdocs`.
+- Hidden full-docroot symlink audit command coverage against a controlled live
+  docroot fixture.
 
 Expected failures in that run:
 
