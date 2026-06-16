@@ -3,8 +3,8 @@
 This project has two verification layers:
 
 - Linux local compatibility tests in `tests/run.sh`.
-- A destructive live E2E matrix against a throwaway WP Cloud or Pressable site
-  for release-critical changes.
+- A destructive live E2E matrix in `scripts/live-e2e.sh` against a throwaway
+  WP Cloud or Pressable site for release-critical changes.
 
 Do not store site credentials in this repository. Keep local secrets in
 `.env.local`, which is ignored by Git.
@@ -25,14 +25,16 @@ The suite runs:
 
 - `tests/test_cli_git_deploy.sh`, a black-box deploy test using local Git
   repositories, cached inspection checks, rollback, worktree cleanup, no-op
-  deploys, deploy-root behavior, hardlink reuse, and Git LFS behavior.
+  deploys, `--force`, deploy-root behavior, public post-deploy hooks,
+  maintenance-file behavior, hardlink reuse, and Git LFS behavior.
 - `tests/test_auth_doctor.sh`, a setup-focused test for deploy-key generation,
   existing-key use, managed key import, auth removal, HTTPS-to-SSH
   conversion, generic SSH guidance, key validation failures, doctor
   diagnostics, and configured `GIT_SSH_COMMAND` verification.
 - `tests/test_remote_invariants.sh`, a direct test of the embedded
   `__remote-deploy` path for public symlink invariants, scoped assertion
-  behavior, and full-docroot audit behavior.
+  behavior, shared-path rejection, maintenance marker ownership, and
+  full-docroot audit behavior.
 - `shellcheck` over the CLI, installer, and tests when `shellcheck` is
   installed.
 
@@ -58,34 +60,63 @@ Use a disposable site because the matrix intentionally mutates docroot content,
 tests rollback, tests protected-path rejection, and verifies cross-deployment
 isolation.
 
-Current live coverage should include:
+The maintained live matrix is:
+
+```bash
+scripts/live-e2e.sh
+```
+
+It reads site credentials from `.env.local` or the environment:
+
+```bash
+WPCLOUD_CLI_SSH_HOST=...
+WPCLOUD_CLI_SSH_PORT=...
+WPCLOUD_CLI_SSH_USERNAME=...
+WPCLOUD_CLI_SSH_PASSWORD=...
+```
+
+The script installs a bundle of the current checkout on the throwaway site, so
+it can validate untagged local changes before a release. It writes evidence to
+`tmp/live-e2e-evidence.md` by default.
+
+Current live coverage includes:
 
 - Baseline deploy.
+- No-op update when the resolved commit and deploy inputs already match the
+  current release.
+- `update --force` and `deploy --force` same-commit redeploys.
+- Deploy-root positive, invalid, missing, clear, and restore behavior.
 - Content change deploy.
+- Configured post-deploy hook execution.
+- One-run `--post-deploy` override behavior.
+- Failing post-deploy behavior: the promoted release remains current, the
+  command exits nonzero, and the tool-owned maintenance marker is removed.
+- Default `.maintenance` creation during promotion and post-deploy.
+- `maintenance_file=none` behavior.
+- Preservation of a non-owned pre-existing maintenance file.
+- Stale tool-owned maintenance marker cleanup during rollback.
 - Complex path deploy.
 - File removal.
 - File-to-directory and directory-to-file swaps.
 - Symlink deploy.
 - Git LFS add and remove.
+- Shared WordPress path rejection for `wp-content/uploads` and `.maintenance`.
 - Public submodule add and remove.
 - Private submodule failure, followed by recovery after removal.
 - Protected anchor rejection, followed by recovery.
 - Layered second deployment.
 - Foreign-layer conflict rejection, followed by recovery.
+- Auth removal and managed-key purge behavior.
 - Rollback, release listing, branch/tag/commit inspection, and retention.
 - Public symlink invariant audit: all owned public symlinks are relative and
   resolve under `/srv/htdocs`.
-
-Release `v1.1.0` was cut after a full live matrix completed at
-`2026-06-16T00:04:39Z`. It covered the scenarios above against the throwaway
-WP Cloud/Pressable site after the existing/imported deploy-key support and
-key-validation edge-case fixes.
 
 Expected failures in that run:
 
 - Private submodule deploy failed before promotion with `could not read Username`
   because the site had no credentials for that private repository.
 - Protected anchor deploy failed with `protected path: wp-load.php`.
+- Shared path deploys failed with `shared path cannot be deployed: ...`.
 - Foreign-layer deploy failed with
   `claim owned by another deployment: layer-owned`.
 
@@ -102,8 +133,10 @@ Before pushing a release-sensitive change:
    and the fact that the CLI does not edit `~/.ssh/config`.
 4. Confirm deploy docs preserve the `$HOME` state layout and docroot release
    namespace.
-5. Confirm LFS, submodule, rollback, cached inspection, no-op deploy,
-   deploy-root, and symlink safety behavior still match the CLI.
+5. Confirm LFS, submodule, rollback, cached inspection, no-op deploy, `--force`,
+   deploy-root, post-deploy, maintenance-file, shared-path, and symlink safety
+   behavior still match the CLI.
 6. Run `tests/run.sh` and `git diff --check`.
 7. Repeat the live E2E matrix for changes that touch promotion, rollback,
-   claims, LFS/submodules, repository caching, or install/runtime layout.
+   claims, post-deploy hooks, maintenance handling, shared-path policy,
+   LFS/submodules, repository caching, or install/runtime layout.

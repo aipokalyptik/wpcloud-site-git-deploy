@@ -2334,20 +2334,21 @@ compute_claims() {
   local shared_path
   local claims_tmp="$output_file.tmp.$$"
   local sorted_tmp="$output_file.sorted.$$"
+  local find_tmp="$output_file.find.$$"
 
-  rm -f -- "$claims_tmp" "$sorted_tmp"
+  rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
   if [[ ! -d "$release_tree" ]]; then
     : >"$output_file"
     return 0
   fi
 
+  find "$release_tree" \( -type f -or -type l \) -print0 >"$find_tmp"
   # shellcheck disable=SC2094
-  find "$release_tree" \( -type f -or -type l \) -print0 |
   while IFS= read -r -d '' release_file; do
     public_path="${release_file#"$release_tree"/}"
 
     if [[ "$public_path" == *$'\n'* ]]; then
-      rm -f -- "$claims_tmp" "$sorted_tmp"
+      rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
       engine_die "unsupported newline in release path"
     fi
 
@@ -2363,16 +2364,16 @@ compute_claims() {
         ;;
     esac
     if [[ "$reject_shared_paths" == "1" ]] && shared_path="$(shared_path_for_public_path "$public_path")"; then
-      rm -f -- "$claims_tmp" "$sorted_tmp"
+      rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
       engine_die "shared path cannot be deployed: $shared_path"
     fi
 
     claim_for_path "$public_path" "$boundaries_file"
-  done >"$claims_tmp"
+  done <"$find_tmp" >"$claims_tmp"
 
   sort -u "$claims_tmp" >"$sorted_tmp"
   mv "$sorted_tmp" "$output_file"
-  rm -f -- "$claims_tmp"
+  rm -f -- "$claims_tmp" "$find_tmp"
 }
 
 prepare_claim_transition() {
