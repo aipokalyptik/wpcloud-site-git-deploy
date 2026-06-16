@@ -54,10 +54,14 @@ assert_contains "wpcloud-site-git-deploy deploys a Git repository" "$tmpdir/help
 assert_contains "[--keep-releases N]" "$tmpdir/help.txt"
 assert_contains "--use-key PATH" "$tmpdir/help.txt"
 assert_contains "--import-key PATH" "$tmpdir/help.txt"
+assert_contains "--force" "$tmpdir/help.txt"
+assert_contains "--post-deploy PATH" "$tmpdir/help.txt"
 assert_contains "--help" "$tmpdir/help.txt"
 assert_contains "--version" "$tmpdir/help.txt"
 assert_contains "wpcloud-site-git-deploy auth site --use-key" "$repo_root/README.md"
 assert_contains "wpcloud-site-git-deploy auth site --import-key" "$repo_root/README.md"
+assert_contains "wpcloud-site-git-deploy update site --force" "$repo_root/README.md"
+assert_contains "wpcloud-site-git-deploy config site --post-deploy" "$repo_root/README.md"
 
 awk '
   /write_release_metadata\(\)/ { in_func=1 }
@@ -262,21 +266,97 @@ case "$noop_output" in
   "no-op $late_release branch $late_commit") ;;
   *) fail "unexpected no-op output: $noop_output" ;;
 esac
+force_update_output="$(HOME="$home_dir" "$cli" update site --force)"
+force_update_release="${force_update_output%% *}"
+[[ "$force_update_release" != "$late_release" ]] || fail "update --force should create a new release id"
+[[ -d "$docroot/.wpcloud-site-git-deploy/deployments/site/releases/$force_update_release" ]] || fail "update --force should create a promoted release"
+case "$force_update_output" in
+  "$force_update_release branch $late_commit") ;;
+  *) fail "unexpected force update output: $force_update_output" ;;
+esac
+force_deploy_output="$(HOME="$home_dir" "$cli" deploy site --branch main --force)"
+force_deploy_release="${force_deploy_output%% *}"
+[[ "$force_deploy_release" != "$force_update_release" ]] || fail "deploy --force should create a new release id"
+case "$force_deploy_output" in
+  "$force_deploy_release branch $late_commit") ;;
+  *) fail "unexpected force deploy output: $force_deploy_output" ;;
+esac
 
-metadata_file="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$late_release.env"
+post_marker="$tmpdir/post-deploy-marker.txt"
+configured_hook="$tmpdir/configured-post-deploy.sh"
+override_hook="$tmpdir/override-post-deploy.sh"
+failing_hook="$tmpdir/failing-post-deploy.sh"
+cat >"$configured_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'configured:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
+SH
+cat >"$override_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'override:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
+SH
+cat >"$failing_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'failing:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
+exit 23
+SH
+chmod +x "$configured_hook" "$override_hook" "$failing_hook"
+if HOME="$home_dir" "$cli" config site --post-deploy "" >"$tmpdir/empty-post-deploy.out" 2>"$tmpdir/empty-post-deploy.err"; then
+  fail "empty post-deploy config should fail"
+fi
+assert_contains "post-deploy path must not be empty" "$tmpdir/empty-post-deploy.err"
+HOME="$home_dir" "$cli" config site --post-deploy "$configured_hook" >/dev/null
+HOME="$home_dir" "$cli" status site >"$tmpdir/status-post-deploy.txt"
+assert_contains "post_deploy=$configured_hook" "$tmpdir/status-post-deploy.txt"
+printf 'post deploy content\n' >"$source_repo/index.html"
+git -C "$source_repo" add index.html
+git -C "$source_repo" commit -m "post deploy content" >/dev/null
+post_commit="$(git -C "$source_repo" rev-parse HEAD)"
+HOME="$home_dir" "$cli" update site >/dev/null
+assert_contains "configured:$docroot:post deploy content" "$post_marker"
+configured_runs_before="$(grep -c '^configured:' "$post_marker")"
+HOME="$home_dir" "$cli" update site --force >/dev/null
+configured_runs_after="$(grep -c '^configured:' "$post_marker")"
+[[ "$configured_runs_after" -eq $((configured_runs_before + 1)) ]] || fail "configured post-deploy should run again on update --force"
+HOME="$home_dir" "$cli" update site --force --post-deploy "$override_hook" >/dev/null
+assert_contains "override:$docroot:post deploy content" "$post_marker"
+override_runs="$(grep -c '^override:' "$post_marker")"
+configured_runs_after_override="$(grep -c '^configured:' "$post_marker")"
+[[ "$override_runs" == "1" ]] || fail "--post-deploy override should run exactly once"
+[[ "$configured_runs_after_override" == "$configured_runs_after" ]] || fail "--post-deploy override should not also run configured hook"
+before_failing_current="$(HOME="$home_dir" "$cli" status site | awk -F= '/^current=/{print $2}')"
+if HOME="$home_dir" "$cli" update site --force --post-deploy "$failing_hook" >"$tmpdir/failing-post-deploy.out" 2>"$tmpdir/failing-post-deploy.err"; then
+  fail "failing post-deploy should make update exit nonzero"
+fi
+after_failing_current="$(HOME="$home_dir" "$cli" status site | awk -F= '/^current=/{print $2}')"
+[[ -n "$after_failing_current" && "$after_failing_current" != "$before_failing_current" ]] || fail "failing post-deploy should leave newly promoted release current"
+assert_contains "failing:$docroot:post deploy content" "$post_marker"
+assert_contains "post-deploy failed: $failing_hook" "$tmpdir/failing-post-deploy.err"
+HOME="$home_dir" "$cli" config site --clear-post-deploy >/dev/null
+HOME="$home_dir" "$cli" status site >"$tmpdir/status-post-deploy-cleared.txt"
+assert_contains "post_deploy=" "$tmpdir/status-post-deploy-cleared.txt"
+cleared_runs_before="$(wc -l <"$post_marker" | tr -d ' ')"
+HOME="$home_dir" "$cli" update site --force >/dev/null
+cleared_runs_after="$(wc -l <"$post_marker" | tr -d ' ')"
+[[ "$cleared_runs_after" == "$cleared_runs_before" ]] || fail "cleared post-deploy config should stop automatic hook execution"
+
+tampered_release="$(HOME="$home_dir" "$cli" status site | awk -F= '/^current=/{print $2}')"
+metadata_file="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$tampered_release.env"
 tamper_marker="$tmpdir/metadata-executed"
 {
-  printf 'commit=%q\n' "$late_commit"
+  printf 'commit=%q\n' "$post_commit"
   printf 'ref_mode=branch\n'
   printf 'ref_value=main\n'
   printf 'deploy_root=\n'
   printf 'touch %q\n' "$tamper_marker"
 } >"$metadata_file"
 HOME="$home_dir" "$cli" update site >"$tmpdir/noop-tampered.txt"
-assert_contains "no-op $late_release branch $late_commit" "$tmpdir/noop-tampered.txt"
+assert_contains "no-op $tampered_release branch $post_commit" "$tmpdir/noop-tampered.txt"
 [[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from no-op path"
 HOME="$home_dir" "$cli" releases site >"$tmpdir/releases-tampered.txt"
-assert_contains "$late_commit branch:main" "$tmpdir/releases-tampered.txt"
+assert_contains "$post_commit branch:main" "$tmpdir/releases-tampered.txt"
 [[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from releases path"
 
 root_source_repo="$tmpdir/root-source"

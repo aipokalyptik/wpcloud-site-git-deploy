@@ -89,6 +89,7 @@ wpcloud-site-git-deploy deploy site --branch main
 wpcloud-site-git-deploy deploy site --tag v1.2.3
 wpcloud-site-git-deploy deploy site --commit 0123456789abcdef
 wpcloud-site-git-deploy update site
+wpcloud-site-git-deploy update site --force
 wpcloud-site-git-deploy rollback site
 ```
 
@@ -105,6 +106,8 @@ wpcloud-site-git-deploy init site \
 
 wpcloud-site-git-deploy config site --deploy-root build/output
 wpcloud-site-git-deploy config site --clear-deploy-root
+wpcloud-site-git-deploy config site --post-deploy /srv/htdocs/post-deploy.sh
+wpcloud-site-git-deploy config site --clear-post-deploy
 ```
 
 When `deploy_root` is set, the CLI still checks out and prepares the full
@@ -140,10 +143,12 @@ Command output is script-friendly:
 - `deploy` and `update` print `no-op <release-id> <ref-mode> <commit>` when
   the fetched commit and configured deploy root already match the active
   release.
+- `deploy --force` and `update --force` create a new release even when the
+  commit and deploy root already match.
 - `rollback` prints `rolled back to <release-id>`.
 - `status` prints `name`, `repo`, `docroot`, `deployment_id`,
-  `default_ref`, `keep_releases`, `deploy_root`, and `current` as `key=value`
-  lines.
+  `default_ref`, `keep_releases`, `deploy_root`, `post_deploy`, and `current`
+  as `key=value` lines.
 - `doctor` prints `OK`, `WARN`, and `FAIL` lines and exits nonzero when any
   required check fails.
 
@@ -236,6 +241,9 @@ Each deploy:
 5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
 6. Promotes that incoming tree to `releases/<release-id>/`.
 7. Reconciles public symlinks and atomically flips `current`.
+8. Runs the configured or one-run post-deploy hook, when present, from the
+   docroot. If the hook fails, the new release remains active and the command
+   exits nonzero.
 
 The previous release tree and public symlinks are used as deploy truth; no manifest is required.
 
@@ -262,6 +270,9 @@ incoming release, promoted release, metadata file, or pruning pass.
 - Public symlink targets must not contain `$HOME`.
 - Root/group-owned non-writable anchors are protected from deploy claims.
 - Sticky root/group-owned writable directories act as dynamic boundaries, which keeps WordPress plugin/theme deployments from claiming too broad a path.
+- WordPress shared paths are rejected if present in the deployable tree:
+  `wp-content/uploads`, `wp-content/cache`, `wp-content/upgrade`,
+  `wp-content/blogs.dir`, and `.maintenance`.
 - Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
 - Deploy-time symlink assertions are scoped to the final claims owned by that
   deployment. The hidden full-docroot audit remains available through

@@ -17,7 +17,7 @@ flowchart TD
   I3 --> I4["Write deployment config under $HOME/.wpcloud-site-git-deploy/deployments"]
 
   C -->|config| CFG["cmd_config"]
-  CFG --> CFG1["Set or clear deploy_root in deployment config"]
+  CFG --> CFG1["Set or clear deploy_root or post_deploy in deployment config"]
 
   C -->|auth| AU["cmd_auth"]
   AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize HTTPS URL to SSH when applicable"]
@@ -32,18 +32,18 @@ flowchart TD
   DOC2 --> DOC3["Optionally run git ls-remote through configured GIT_SSH_COMMAND"]
 
   C -->|deploy| D["cmd_deploy"]
-  D --> D1["Parse exactly one ref: --branch, --tag, or --commit"]
+  D --> D1["Parse exactly one ref plus optional --force and --post-deploy"]
   D1 --> DR["deploy_ref"]
 
   C -->|update| U["cmd_update"]
-  U --> U1["load_config"]
+  U --> U1["Parse optional --force and --post-deploy, then load_config"]
   U1 --> DR
 
   DR --> DR1["load_config"]
   DR1 --> DR2["ensure_state_dirs and ensure_helper"]
   DR2 --> DR3["fetch_repo: clone/cache, fetch tags/prune, git gc --auto"]
   DR3 --> DR4["resolve_ref to commit"]
-  DR4 --> NR{"Non-executing metadata read: commit + deploy_root match?"}
+  DR4 --> NR{"No --force and metadata commit + deploy_root match?"}
   NR -->|yes| NRO["Print no-op release_id ref_mode commit"]
   NR -->|no| DR5["make_release_id"]
   DR5 --> DR6["create_worktree via git worktree add --detach"]
@@ -65,7 +65,7 @@ flowchart TD
   EPCT1 --> EPCT2["discover_protected_anchors"]
   EPCT2 --> EPCT3["compute old claims + materialized public claims"]
   EPCT3 --> EPCT4["compute new claims"]
-  EPCT4 --> EPCT5["validate_claims_not_protected"]
+  EPCT4 --> EPCT5["reject shared paths and protected anchors"]
   EPCT5 --> EPCT6["compute removed claims"]
   EPCT6 --> MOVE["Move incoming to releases/<release-id>"]
   MOVE --> EACT["apply_claim_transition"]

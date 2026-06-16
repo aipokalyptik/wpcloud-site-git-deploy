@@ -186,6 +186,39 @@ Expected no-change output looks like:
 no-op 20260613120000-abcdef123456-abcd branch abcdef1234567890...
 ```
 
+## Run A Post-Deploy Hook
+
+Use this for cache flushes, database upgrade commands, CDN purges, or warm-up
+requests that should run after every successful promotion:
+
+```bash
+cat > /srv/htdocs/post-deploy.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+wp cache flush
+SH
+
+wpcloud-site-git-deploy config site --post-deploy /srv/htdocs/post-deploy.sh
+wpcloud-site-git-deploy update site
+```
+
+The hook runs from `/srv/htdocs` after `current` flips. If it fails, the new
+release remains active and the command exits nonzero. Use `--post-deploy PATH`
+on `deploy` or `update` for a one-run override.
+
+## Force A Fresh Release
+
+Use `--force` when the commit has not changed but you intentionally want to run
+the full deploy path again:
+
+```bash
+wpcloud-site-git-deploy update site --force
+wpcloud-site-git-deploy deploy site --branch main --force
+```
+
+This bypasses the no-op check, creates a new release, and runs any configured
+post-deploy hook.
+
 ## Trigger Updates From GitHub Actions
 
 This pattern keeps the deployment engine on the site. GitHub Actions only SSHes

@@ -119,3 +119,28 @@ if "${remote[@]}" --docroot "$foreign_docroot" --deployment-id site --release-id
   fail "namespace symlink owned by another deployment should be rejected"
 fi
 grep -Fq -- "claim owned by another deployment: index.html" "$tmpdir/foreign-owner.log" || fail "unexpected foreign-owner rejection"
+
+assert_shared_path_fails() {
+  local name="$1"
+  local shared_path="$2"
+  local expected_path="$3"
+  local shared_docroot="$tmpdir/$name-docroot"
+  local shared_base="$shared_docroot/.wpcloud-site-git-deploy/deployments/site"
+  local initial_incoming="$shared_base/incoming/release-one"
+  local bad_incoming="$shared_base/incoming/release-two"
+
+  mkdir -p "$initial_incoming"
+  printf 'ok\n' >"$initial_incoming/index.html"
+  "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+
+  mkdir -p "$bad_incoming/$(dirname "$shared_path")"
+  printf 'bad\n' >"$bad_incoming/$shared_path"
+  if "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-two --keep-releases 2 >/dev/null 2>"$tmpdir/$name-shared.log"; then
+    fail "shared path $shared_path should be rejected"
+  fi
+  grep -Fq -- "shared path cannot be deployed: $expected_path" "$tmpdir/$name-shared.log" || fail "unexpected shared path rejection for $shared_path"
+  [[ "$(readlink "$shared_base/current")" == "releases/release-one" ]] || fail "shared path rejection should leave current unchanged"
+}
+
+assert_shared_path_fails uploads "wp-content/uploads/file.jpg" "wp-content/uploads"
+assert_shared_path_fails maintenance ".maintenance" ".maintenance"

@@ -127,6 +127,8 @@ wpcloud-site-git-deploy update site
 
 `update` fetches the configured default branch and deploys it only when the
 active release does not already match that commit and deploy root.
+Use `--force` when you intentionally need a fresh release for the same commit,
+for example after clearing external state or changing a post-deploy hook.
 
 ## Authentication
 
@@ -278,11 +280,25 @@ Deploy the configured default branch:
 
 ```bash
 wpcloud-site-git-deploy update site
+wpcloud-site-git-deploy update site --force
 ```
 
 If the resolved commit and deploy root already match the active release,
 `deploy` and `update` print a `no-op ...` line and exit successfully without
 creating a new release. This makes `update` safe for WP Cloud API cron.
+`deploy --force` and `update --force` bypass that no-op check.
+
+Configure a post-deploy hook:
+
+```bash
+wpcloud-site-git-deploy config site --post-deploy /srv/htdocs/post-deploy.sh
+wpcloud-site-git-deploy deploy site --branch main --post-deploy /srv/htdocs/one-run-hook.sh
+wpcloud-site-git-deploy config site --clear-post-deploy
+```
+
+Post-deploy hooks run from the docroot after `current` flips and stale symlinks
+are cleaned up. If the hook fails, the new release remains active and the
+command exits nonzero; rollback is manual.
 
 ## Inspecting State
 
@@ -443,6 +459,9 @@ The tool is deliberately conservative:
 - Public symlink targets must not contain `$HOME`.
 - Root/group-owned protected anchors are rejected.
 - Sticky root/group-owned writable directories act as dynamic boundaries.
+- WordPress shared paths are rejected when present in the deployable tree:
+  `wp-content/uploads`, `wp-content/cache`, `wp-content/upgrade`,
+  `wp-content/blogs.dir`, and `.maintenance`.
 - Existing public paths are reclaimed only through the Linux
   `exchange-rename` helper.
 - Deploy-time assertions validate only the final claims owned by that
@@ -492,11 +511,11 @@ Common failures:
 
 ```text
 wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
-wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root]
-wpcloud-site-git-deploy deploy <name> --branch BRANCH
-wpcloud-site-git-deploy deploy <name> --tag TAG
-wpcloud-site-git-deploy deploy <name> --commit SHA
-wpcloud-site-git-deploy update <name>
+wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root | --post-deploy PATH | --clear-post-deploy]
+wpcloud-site-git-deploy deploy <name> --branch BRANCH [--force] [--post-deploy PATH]
+wpcloud-site-git-deploy deploy <name> --tag TAG [--force] [--post-deploy PATH]
+wpcloud-site-git-deploy deploy <name> --commit SHA [--force] [--post-deploy PATH]
+wpcloud-site-git-deploy update <name> [--force] [--post-deploy PATH]
 wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
 wpcloud-site-git-deploy releases <name>
 wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]
