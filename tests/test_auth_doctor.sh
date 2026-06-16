@@ -132,7 +132,7 @@ assert_contains "Removed deploy key configuration for site" "$tmpdir/auth-remove
 assert_not_contains "ssh_key_path=" "$config_file"
 [[ -f "$key_path" ]] || fail "auth --remove should preserve private key by default"
 [[ -f "$key_path.pub" ]] || fail "auth --remove should preserve public key by default"
->"$tmpdir/git.log"
+: >"$tmpdir/git.log"
 HOME="$home_dir" "$cli" doctor site --offline >"$tmpdir/doctor-no-key.txt" || true
 assert_contains "FAIL ssh-key: no deploy key configured" "$tmpdir/doctor-no-key.txt"
 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-no-key-remote.txt" || true
@@ -174,7 +174,7 @@ printf 'ssh-ed25519 PUBLICKEY wpcloud-test\n' >"$key_path.pub"
 external_key="$tmpdir/external_ed25519"
 printf 'EXTERNAL PRIVATE KEY\n' >"$external_key"
 chmod 600 "$external_key"
->"$tmpdir/git.log"
+: >"$tmpdir/git.log"
 HOME="$home_dir" "$cli" auth site --use-key "$external_key" --verify >"$tmpdir/auth-use-key.txt"
 assert_contains "ssh_key_path=$external_key" "$config_file"
 assert_contains "Using existing deploy key: $external_key" "$tmpdir/auth-use-key.txt"
