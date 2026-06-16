@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.1.2"
+readonly VERSION="1.1.3"
 # Default number of promoted docroot releases retained for rollback.
 readonly DEFAULT_KEEP_RELEASES="3"
 # Default tool-owned WordPress maintenance marker created during promotion.
