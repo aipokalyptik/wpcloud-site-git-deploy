@@ -24,18 +24,24 @@ inode_of() {
   stat -c '%i' "$1"
 }
 
-supports_hardlinks() {
+supports_rsync_link_dest() {
   local dir="$1"
-  local left="$dir/.hardlink-probe-left.$$"
-  local right="$dir/.hardlink-probe-right.$$"
+  local probe="$dir/.rsync-link-dest-probe.$$"
+  local source="$probe/source"
+  local basis="$probe/basis"
+  local dest="$probe/dest"
+  local result=1
 
-  printf 'probe\n' >"$left"
-  if ln "$left" "$right" 2>/dev/null; then
-    rm -f "$left" "$right"
-    return 0
+  rm -rf "$probe"
+  mkdir -p "$source" "$basis" "$dest"
+  printf 'probe\n' >"$source/file.txt"
+  cp "$source/file.txt" "$basis/file.txt"
+  if rsync -a --checksum --link-dest="$basis" "$source/" "$dest/" >/dev/null 2>&1 &&
+    [[ "$(inode_of "$basis/file.txt")" == "$(inode_of "$dest/file.txt")" ]]; then
+    result=0
   fi
-  rm -f "$left" "$right"
-  return 1
+  rm -rf "$probe"
+  return "$result"
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -175,10 +181,10 @@ second_release="${second_deploy%% *}"
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "branch deploy did not publish feature content"
 first_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/assets/app.txt"
 second_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/assets/app.txt"
-if supports_hardlinks "$docroot"; then
+if supports_rsync_link_dest "$docroot"; then
   [[ "$(inode_of "$first_asset")" == "$(inode_of "$second_asset")" ]] || fail "unchanged asset should be hardlinked across releases"
 else
-  echo "hardlinks not supported in test docroot; skipping hardlink inode assertion" >&2
+  echo "rsync --link-dest hardlink reuse not supported in test docroot; skipping hardlink inode assertion" >&2
 fi
 first_index="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/index.html"
 second_index="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/index.html"
