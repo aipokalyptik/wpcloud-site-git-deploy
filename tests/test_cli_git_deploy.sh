@@ -307,7 +307,8 @@ grep -Fx 'theme file' "$root_docroot/wp-content/themes/demo/style.css" >/dev/nul
 HOME="$root_home_dir" "$cli" releases root-site >"$tmpdir/root-releases.txt"
 assert_contains "$root_commit" "$tmpdir/root-releases.txt"
 assert_contains "deploy-root:public" "$tmpdir/root-releases.txt"
-assert_contains "deploy_root=public" <(HOME="$root_home_dir" "$cli" status root-site)
+HOME="$root_home_dir" "$cli" status root-site >"$tmpdir/root-status-public.txt"
+assert_contains "deploy_root=public" "$tmpdir/root-status-public.txt"
 
 HOME="$root_home_dir" "$cli" config root-site --deploy-root missing >/dev/null
 if HOME="$root_home_dir" "$cli" update root-site >"$tmpdir/missing-root.txt" 2>&1; then
@@ -319,7 +320,8 @@ if HOME="$root_home_dir" "$cli" config root-site --deploy-root ../outside >"$tmp
 fi
 assert_contains "deploy-root must be a safe relative path" "$tmpdir/bad-root.txt"
 HOME="$root_home_dir" "$cli" config root-site --clear-deploy-root >/dev/null
-assert_contains "deploy_root=" <(HOME="$root_home_dir" "$cli" status root-site)
+HOME="$root_home_dir" "$cli" status root-site >"$tmpdir/root-status-cleared.txt"
+assert_contains "deploy_root=" "$tmpdir/root-status-cleared.txt"
 root_count_before_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 HOME="$root_home_dir" "$cli" update root-site >/dev/null
 root_count_after_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
