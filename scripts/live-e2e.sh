@@ -360,20 +360,24 @@ cat >"$configured" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
-grep -Fx 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
-grep -Fx 'deployment_id=cli-test' .maintenance >/dev/null
+grep -Fx '<?php' .maintenance >/dev/null
+grep -F '\$upgrading = ' .maintenance >/dev/null
+grep -Fx '// wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx '// deployment_id=cli-test' .maintenance >/dev/null
 printf 'configured:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$marker"
 SH
 cat >"$override" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
+grep -F '\$upgrading = ' .maintenance >/dev/null
 printf 'override:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$marker"
 SH
 cat >"$failing" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
+grep -F '\$upgrading = ' .maintenance >/dev/null
 printf 'failing:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$marker"
 exit 42
 SH
@@ -414,8 +418,10 @@ wpcloud-site-git-deploy update cli-test --force >/dev/null
 grep -Fx 'manual maintenance' /srv/htdocs/.maintenance
 rm -f /srv/htdocs/.maintenance
 cat > /srv/htdocs/.maintenance <<EOF
-wpcloud-site-git-deploy maintenance
-deployment_id=cli-test
+<?php
+\$upgrading = 1234567890;
+// wpcloud-site-git-deploy maintenance
+// deployment_id=cli-test
 EOF
 wpcloud-site-git-deploy rollback cli-test >/dev/null
 test ! -e /srv/htdocs/.maintenance

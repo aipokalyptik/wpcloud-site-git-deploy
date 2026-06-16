@@ -1618,8 +1618,14 @@ maintenance_file_is_tool_owned() {
   local deployment_id="$2"
 
   [[ ! -L "$path" && -f "$path" ]] || return 1
-  grep -Fxq "wpcloud-site-git-deploy maintenance" "$path" || return 1
-  grep -Fxq "deployment_id=$deployment_id" "$path" || return 1
+  {
+    grep -Fxq "wpcloud-site-git-deploy maintenance" "$path" ||
+      grep -Fxq "// wpcloud-site-git-deploy maintenance" "$path"
+  } || return 1
+  {
+    grep -Fxq "deployment_id=$deployment_id" "$path" ||
+      grep -Fxq "// deployment_id=$deployment_id" "$path"
+  } || return 1
 }
 
 cleanup_owned_maintenance_file() {
@@ -1656,10 +1662,12 @@ create_maintenance_file() {
   tmp_path="$path.$$"
   rm -f -- "$tmp_path"
   {
-    printf 'wpcloud-site-git-deploy maintenance\n'
-    printf 'deployment_id=%s\n' "$deployment_id"
-    printf 'release_id=%s\n' "$release_id"
-    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '<?php\n'
+    printf '%s\n' "\$upgrading = $(date +%s);"
+    printf '// wpcloud-site-git-deploy maintenance\n'
+    printf '// deployment_id=%s\n' "$deployment_id"
+    printf '// release_id=%s\n' "$release_id"
+    printf '// created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$tmp_path"
   mv -T "$tmp_path" "$path"
 }
@@ -1716,13 +1724,15 @@ assert_public_symlinks_under_docroot() {
   local resolved_dir
   local resolved
   local home_value="${HOME:-}"
+  local links_tmp
 
   docroot_real="$(cd "$docroot" && pwd -P)" || engine_die "docroot does not exist: $docroot"
 
   # Public symlinks must be usable by HTTP. On WP Cloud, $HOME exists in SSH
   # sessions but is not mounted for web requests, so any target outside docroot
   # is a broken deployment even if it works over SSH.
-  { find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 2>/dev/null || true; } |
+  links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-links.XXXXXX")" || engine_die "mktemp is required"
+  find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null || true
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
 
@@ -1750,7 +1760,8 @@ assert_public_symlinks_under_docroot() {
         engine_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
         ;;
     esac
-  done
+  done <"$links_tmp"
+  rm -f -- "$links_tmp"
 }
 
 resolve_path() {
@@ -2029,18 +2040,21 @@ reject_foreign_deployment_descendant_claim() {
   local link_path
   local target
   local owner
+  local links_tmp
 
   [[ -d "$public_path" && ! -L "$public_path" ]] || return 0
 
   # Reclaiming a real directory is destructive to that exact path. Refuse when
   # it contains another deployment's symlink so layers cannot engulf each other.
-  { find "$public_path" -mindepth 1 -type l -print0 2>/dev/null || true; } |
+  links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-descendants.XXXXXX")" || engine_die "mktemp is required"
+  find "$public_path" -mindepth 1 -type l -print0 >"$links_tmp" 2>/dev/null || true
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
     if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
       engine_die "claim contains another deployment: $claim"
     fi
-  done
+  done <"$links_tmp"
+  rm -f -- "$links_tmp"
 }
 
 remove_exact_claim_symlink() {
@@ -2106,21 +2120,22 @@ discover_materialized_public_claims() {
   local deployment_id="$2"
   local output_file="$3"
   local claims_tmp="$output_file.tmp.$$"
+  local links_tmp="$output_file.links.$$"
   local link_path
   local claim
   local target
   local expected_target
 
-  rm -f -- "$claims_tmp"
+  rm -f -- "$claims_tmp" "$links_tmp"
   : >"$claims_tmp"
 
+  find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null || true
   # shellcheck disable=SC2094
-  { find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 2>/dev/null || true; } |
   while IFS= read -r -d '' link_path; do
     claim="${link_path#"$docroot"/}"
 
     if [[ "$claim" == *$'\n'* ]]; then
-      rm -f -- "$claims_tmp"
+      rm -f -- "$claims_tmp" "$links_tmp"
       engine_die "unsupported newline in public symlink path"
     fi
 
@@ -2129,10 +2144,10 @@ discover_materialized_public_claims() {
     if [[ "$target" == "$expected_target" ]]; then
       printf '%s\n' "$claim"
     fi
-  done >"$claims_tmp"
+  done <"$links_tmp" >"$claims_tmp"
 
   sort -u "$claims_tmp" >"$output_file"
-  rm -f -- "$claims_tmp"
+  rm -f -- "$claims_tmp" "$links_tmp"
 }
 
 combine_claims() {

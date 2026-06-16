@@ -208,7 +208,8 @@ on `deploy` or `update` for a one-run override.
 
 Maintenance mode is on by default during promotion, so WordPress sees the
 tool-owned `.maintenance` marker while public symlinks are reconciled and while
-the post-deploy hook runs. Disable it for sites that should stay publicly
+the post-deploy hook runs. The marker uses WordPress's PHP `$upgrading` format,
+not a plain text sentinel. Disable it for sites that should stay publicly
 available through every deploy:
 
 ```bash
@@ -221,6 +222,10 @@ Use the same option as a one-run override:
 ```bash
 wpcloud-site-git-deploy update site --maintenance-file none
 ```
+
+When multiple deployments share one docroot, a deployment will not overwrite or
+remove another deployment's active maintenance marker. If it starts while
+another deployment's marker is present, it proceeds without owning that marker.
 
 ## Force A Fresh Release
 

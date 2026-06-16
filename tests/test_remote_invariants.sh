@@ -155,8 +155,10 @@ cat >"$maintenance_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
-grep -Fx 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
-grep -Fx 'deployment_id=site' .maintenance >/dev/null
+grep -Fx '<?php' .maintenance >/dev/null
+grep -F '\$upgrading = ' .maintenance >/dev/null
+grep -Fx '// wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx '// deployment_id=site' .maintenance >/dev/null
 SH
 chmod +x "$maintenance_hook"
 "${remote[@]}" --docroot "$maintenance_docroot" --deployment-id site --release-id release-one --keep-releases 2 --maintenance-file .maintenance --post-deploy-file "$maintenance_hook" >/dev/null
@@ -183,3 +185,18 @@ if "${remote[@]}" --docroot "$rollback_missing_docroot" --deployment-id site --r
 fi
 grep -Fq -- "rollback release does not exist" "$tmpdir/rollback-missing-maintenance.log" || fail "unexpected rollback missing maintenance failure"
 [[ ! -e "$rollback_missing_docroot/.maintenance" ]] || fail "failed rollback should remove stale tool-owned maintenance file"
+
+rollback_missing_new_docroot="$tmpdir/rollback-missing-new-maintenance-docroot"
+rollback_missing_new_base="$rollback_missing_new_docroot/.wpcloud-site-git-deploy/deployments/site"
+mkdir -p "$rollback_missing_new_base/releases" "$rollback_missing_new_docroot"
+cat >"$rollback_missing_new_docroot/.maintenance" <<'EOF'
+<?php
+$upgrading = 1234567890;
+// wpcloud-site-git-deploy maintenance
+// deployment_id=site
+EOF
+if "${remote[@]}" --docroot "$rollback_missing_new_docroot" --deployment-id site --rollback-to missing-release --maintenance-file .maintenance >/dev/null 2>"$tmpdir/rollback-missing-new-maintenance.log"; then
+  fail "rollback to missing release should fail for new maintenance marker"
+fi
+grep -Fq -- "rollback release does not exist" "$tmpdir/rollback-missing-new-maintenance.log" || fail "unexpected rollback missing new maintenance failure"
+[[ ! -e "$rollback_missing_new_docroot/.maintenance" ]] || fail "failed rollback should remove stale new-format tool-owned maintenance file"

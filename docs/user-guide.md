@@ -300,7 +300,8 @@ Post-deploy hooks run from the docroot after `current` flips and stale symlinks
 are cleaned up. If the hook fails, the new release remains active and the
 command exits nonzero; rollback is manual.
 
-Maintenance mode is enabled by default with a tool-owned `.maintenance` marker:
+Maintenance mode is enabled by default with a tool-owned `.maintenance` marker
+that uses WordPress's PHP `$upgrading` format:
 
 ```bash
 wpcloud-site-git-deploy config site --maintenance-file none
@@ -312,6 +313,11 @@ When enabled, the marker is created before claim reconciliation and remains
 through the post-deploy hook. The tool removes only marker files it created for
 the same deployment, including stale markers found during later deploys or
 rollbacks.
+
+If two deployments share a docroot and overlap in time, neither deployment
+removes the other's maintenance marker. A deployment that finds another
+deployment's marker already present proceeds without owning that marker; a later
+deploy can create its own marker after the first one has been removed.
 
 ## Inspecting State
 
@@ -478,6 +484,8 @@ The tool is deliberately conservative:
 - Tool-managed maintenance mode removes only files containing this tool's
   deployment marker. Existing manual or WordPress-created maintenance files are
   preserved.
+- Concurrent deployments sharing one docroot do not replace each other's active
+  maintenance markers.
 - Existing public paths are reclaimed only through the Linux
   `exchange-rename` helper.
 - Deploy-time assertions validate only the final claims owned by that

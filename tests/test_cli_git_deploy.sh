@@ -298,21 +298,27 @@ cat >"$configured_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
-grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx '<?php' .maintenance >/dev/null
+grep -F '\$upgrading = ' .maintenance >/dev/null
+grep -Fx '// wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'configured:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 SH
 cat >"$override_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
-grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx '<?php' .maintenance >/dev/null
+grep -F '\$upgrading = ' .maintenance >/dev/null
+grep -Fx '// wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'override:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 SH
 cat >"$failing_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 test -f .maintenance
-grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx '<?php' .maintenance >/dev/null
+grep -F '\$upgrading = ' .maintenance >/dev/null
+grep -Fx '// wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'failing:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 exit 23
 SH

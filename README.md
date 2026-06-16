@@ -243,7 +243,8 @@ Each deploy:
 5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
 6. Creates the configured tool-owned WordPress maintenance marker before claim
    reconciliation. The default is `.maintenance`; use `maintenance_file=none`
-   to disable it.
+   to disable it. The marker is PHP in WordPress's expected format and sets
+   `$upgrading` while it exists.
 7. Validates the claim transition and promotes incoming to `releases/<release-id>/`.
 8. Reconciles public symlinks and atomically flips `current`.
 9. Runs the configured or one-run post-deploy hook, when present, from the
@@ -283,6 +284,10 @@ incoming release, promoted release, metadata file, or pruning pass.
 - The tool removes only maintenance files containing its own marker for the
   configured deployment. Pre-existing or manually created maintenance files are
   preserved.
+- If two deployments share a docroot and overlap in time, a deployment will not
+  replace or remove another deployment's active maintenance marker. The second
+  deployment proceeds without owning that marker until it can create its own on
+  a later run.
 - Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
 - Deploy-time symlink assertions are scoped to the final claims owned by that
   deployment. The hidden full-docroot audit remains available through
