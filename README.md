@@ -31,7 +31,7 @@ On the site SSH user:
 - GNU `find`
 - `ssh-keygen` for `auth`
 - `flock`, `sort`, `comm`, `cut`, `grep`, `cat`, `readlink`, `ln`, `mv`,
-  `rm`, `mkdir`, `mktemp`, `touch`, and `stat`
+  `rm`, `mkdir`, `mktemp`, `touch`, `stat`, and `date`
 - Git LFS only when the deployed repository has LFS-tracked paths
 
 The committed helper binary is Linux amd64 and uses
@@ -108,6 +108,8 @@ wpcloud-site-git-deploy config site --deploy-root build/output
 wpcloud-site-git-deploy config site --clear-deploy-root
 wpcloud-site-git-deploy config site --post-deploy /srv/htdocs/post-deploy.sh
 wpcloud-site-git-deploy config site --clear-post-deploy
+wpcloud-site-git-deploy config site --maintenance-file none
+wpcloud-site-git-deploy config site --maintenance-file .maintenance
 ```
 
 When `deploy_root` is set, the CLI still checks out and prepares the full
@@ -147,8 +149,8 @@ Command output is script-friendly:
   commit and deploy root already match.
 - `rollback` prints `rolled back to <release-id>`.
 - `status` prints `name`, `repo`, `docroot`, `deployment_id`,
-  `default_ref`, `keep_releases`, `deploy_root`, `post_deploy`, and `current`
-  as `key=value` lines.
+  `default_ref`, `keep_releases`, `deploy_root`, `post_deploy`,
+  `maintenance_file`, and `current` as `key=value` lines.
 - `doctor` prints `OK`, `WARN`, and `FAIL` lines and exits nonzero when any
   required check fails.
 
@@ -239,11 +241,16 @@ Each deploy:
 3. Creates a clean worktree under `$HOME/.wpcloud-site-git-deploy/tmp/`.
 4. Prepares Git LFS files and submodules when present.
 5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
-6. Promotes that incoming tree to `releases/<release-id>/`.
-7. Reconciles public symlinks and atomically flips `current`.
-8. Runs the configured or one-run post-deploy hook, when present, from the
-   docroot. If the hook fails, the new release remains active and the command
-   exits nonzero.
+6. Creates the configured tool-owned WordPress maintenance marker before claim
+   reconciliation. The default is `.maintenance`; use `maintenance_file=none`
+   to disable it.
+7. Validates the claim transition and promotes incoming to `releases/<release-id>/`.
+8. Reconciles public symlinks and atomically flips `current`.
+9. Runs the configured or one-run post-deploy hook, when present, from the
+   docroot while the maintenance marker is still present. If the hook fails,
+   the new release remains active and the command exits nonzero.
+10. Removes the maintenance marker after the hook returns, and also attempts
+    marker cleanup on failed deploys, failed hooks, and rollback.
 
 The previous release tree and public symlinks are used as deploy truth; no manifest is required.
 
@@ -273,6 +280,9 @@ incoming release, promoted release, metadata file, or pruning pass.
 - WordPress shared paths are rejected if present in the deployable tree:
   `wp-content/uploads`, `wp-content/cache`, `wp-content/upgrade`,
   `wp-content/blogs.dir`, and `.maintenance`.
+- The tool removes only maintenance files containing its own marker for the
+  configured deployment. Pre-existing or manually created maintenance files are
+  preserved.
 - Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
 - Deploy-time symlink assertions are scoped to the final claims owned by that
   deployment. The hidden full-docroot audit remains available through

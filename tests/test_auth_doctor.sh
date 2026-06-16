@@ -266,7 +266,7 @@ assert_contains "cannot import the managed deploy key onto itself" "$tmpdir/auth
 
 no_ssh_keygen_bin="$tmpdir/no-ssh-keygen-auth-bin"
 mkdir -p "$no_ssh_keygen_bin"
-for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp basename; do
+for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat date dirname pwd uname chmod cp basename; do
   command_path="$(command -v "$command_name")"
   ln -s "$command_path" "$no_ssh_keygen_bin/$command_name"
 done
@@ -311,7 +311,7 @@ assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-generic
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-generic-https.txt"
 no_keygen_public_bin="$tmpdir/no-keygen-public-bin"
 mkdir -p "$no_keygen_public_bin"
-for command_name in bash rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp; do
+for command_name in bash rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat date dirname pwd uname chmod cp; do
   command_path="$(command -v "$command_name")"
   ln -s "$command_path" "$no_keygen_public_bin/$command_name"
 done
@@ -334,7 +334,7 @@ assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-missing
 
 no_keygen_bin="$tmpdir/no-keygen-bin"
 mkdir -p "$no_keygen_bin"
-for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat dirname pwd uname chmod cp; do
+for command_name in bash git rsync find flock sort comm cut grep readlink ln rm mv mkdir mktemp touch cat stat date dirname pwd uname chmod cp; do
   command_path="$(command -v "$command_name")"
   ln -s "$command_path" "$no_keygen_bin/$command_name"
 done

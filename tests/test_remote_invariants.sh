@@ -144,3 +144,42 @@ assert_shared_path_fails() {
 
 assert_shared_path_fails uploads "wp-content/uploads/file.jpg" "wp-content/uploads"
 assert_shared_path_fails maintenance ".maintenance" ".maintenance"
+
+maintenance_docroot="$tmpdir/tool-maintenance-docroot"
+maintenance_base="$maintenance_docroot/.wpcloud-site-git-deploy/deployments/site"
+maintenance_incoming="$maintenance_base/incoming/release-one"
+maintenance_hook="$tmpdir/maintenance-hook.sh"
+mkdir -p "$maintenance_incoming"
+printf 'ok\n' >"$maintenance_incoming/index.html"
+cat >"$maintenance_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+test -f .maintenance
+grep -Fx 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
+grep -Fx 'deployment_id=site' .maintenance >/dev/null
+SH
+chmod +x "$maintenance_hook"
+"${remote[@]}" --docroot "$maintenance_docroot" --deployment-id site --release-id release-one --keep-releases 2 --maintenance-file .maintenance --post-deploy-file "$maintenance_hook" >/dev/null
+[[ ! -e "$maintenance_docroot/.maintenance" ]] || fail "successful deploy should remove tool-owned maintenance file"
+
+nonowned_docroot="$tmpdir/nonowned-maintenance-docroot"
+nonowned_base="$nonowned_docroot/.wpcloud-site-git-deploy/deployments/site"
+nonowned_incoming="$nonowned_base/incoming/release-one"
+mkdir -p "$nonowned_incoming" "$nonowned_docroot"
+printf 'manual maintenance\n' >"$nonowned_docroot/.maintenance"
+printf 'ok\n' >"$nonowned_incoming/index.html"
+"${remote[@]}" --docroot "$nonowned_docroot" --deployment-id site --release-id release-one --keep-releases 2 --maintenance-file .maintenance >/dev/null
+grep -Fx 'manual maintenance' "$nonowned_docroot/.maintenance" >/dev/null || fail "non-owned maintenance file should be preserved"
+
+rollback_missing_docroot="$tmpdir/rollback-missing-maintenance-docroot"
+rollback_missing_base="$rollback_missing_docroot/.wpcloud-site-git-deploy/deployments/site"
+mkdir -p "$rollback_missing_base/releases" "$rollback_missing_docroot"
+cat >"$rollback_missing_docroot/.maintenance" <<'EOF'
+wpcloud-site-git-deploy maintenance
+deployment_id=site
+EOF
+if "${remote[@]}" --docroot "$rollback_missing_docroot" --deployment-id site --rollback-to missing-release --maintenance-file .maintenance >/dev/null 2>"$tmpdir/rollback-missing-maintenance.log"; then
+  fail "rollback to missing release should fail"
+fi
+grep -Fq -- "rollback release does not exist" "$tmpdir/rollback-missing-maintenance.log" || fail "unexpected rollback missing maintenance failure"
+[[ ! -e "$rollback_missing_docroot/.maintenance" ]] || fail "failed rollback should remove stale tool-owned maintenance file"

@@ -206,6 +206,22 @@ The hook runs from `/srv/htdocs` after `current` flips. If it fails, the new
 release remains active and the command exits nonzero. Use `--post-deploy PATH`
 on `deploy` or `update` for a one-run override.
 
+Maintenance mode is on by default during promotion, so WordPress sees the
+tool-owned `.maintenance` marker while public symlinks are reconciled and while
+the post-deploy hook runs. Disable it for sites that should stay publicly
+available through every deploy:
+
+```bash
+wpcloud-site-git-deploy config site --maintenance-file none
+wpcloud-site-git-deploy update site
+```
+
+Use the same option as a one-run override:
+
+```bash
+wpcloud-site-git-deploy update site --maintenance-file none
+```
+
 ## Force A Fresh Release
 
 Use `--force` when the commit has not changed but you intentionally want to run

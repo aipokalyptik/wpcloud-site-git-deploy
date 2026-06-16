@@ -4,6 +4,8 @@ set -euo pipefail
 readonly VERSION="1.1.2"
 # Default number of promoted docroot releases retained for rollback.
 readonly DEFAULT_KEEP_RELEASES="3"
+# Default tool-owned WordPress maintenance marker created during promotion.
+readonly DEFAULT_MAINTENANCE_FILE=".maintenance"
 # Web-visible deployment namespace under the docroot.
 readonly DOCROOT_NAMESPACE=".wpcloud-site-git-deploy"
 readonly DOCROOT_NAMESPACE_SUFFIX="${DOCROOT_NAMESPACE#.}"
@@ -38,12 +40,12 @@ usage() {
 	wpcloud-site-git-deploy deploys a Git repository into a WP Cloud or Pressable docroot from the site SSH user.
 
 	Usage:
-	  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
-	  wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root | --post-deploy PATH | --clear-post-deploy]
-	  wpcloud-site-git-deploy deploy <name> --branch BRANCH [--force] [--post-deploy PATH]
-	  wpcloud-site-git-deploy deploy <name> --tag TAG [--force] [--post-deploy PATH]
-	  wpcloud-site-git-deploy deploy <name> --commit SHA [--force] [--post-deploy PATH]
-	  wpcloud-site-git-deploy update <name> [--force] [--post-deploy PATH]
+	  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH] [--maintenance-file PATH|none]
+	  wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root | --post-deploy PATH | --clear-post-deploy | --maintenance-file PATH|none]
+	  wpcloud-site-git-deploy deploy <name> --branch BRANCH [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+	  wpcloud-site-git-deploy deploy <name> --tag TAG [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+	  wpcloud-site-git-deploy deploy <name> --commit SHA [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+	  wpcloud-site-git-deploy update <name> [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
 	  wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
 	  wpcloud-site-git-deploy releases <name>
 	  wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]
@@ -116,6 +118,7 @@ load_config() {
   ssh_key_path="${ssh_key_path:-}"
   deploy_root="${deploy_root:-}"
   post_deploy="${post_deploy:-}"
+  maintenance_file="${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}"
 }
 
 ensure_state_dirs() {
@@ -139,6 +142,9 @@ write_config() {
     if [[ -n "${post_deploy:-}" ]]; then
       write_config_value post_deploy "$post_deploy"
     fi
+    if [[ "${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}" != "$DEFAULT_MAINTENANCE_FILE" ]]; then
+      write_config_value maintenance_file "$maintenance_file"
+    fi
     if [[ -n "${ssh_key_path:-}" ]]; then
       write_config_value ssh_key_path "$ssh_key_path"
     fi
@@ -151,6 +157,35 @@ require_post_deploy_path() {
 
   [[ -n "$value" ]] || die "post-deploy path must not be empty"
   [[ "$value" != *$'\n'* ]] || die "post-deploy path must not contain newlines"
+}
+
+require_maintenance_file() {
+  local value="$1"
+  local die_fn="${2:-die}"
+  local component
+  local rest
+
+  if [[ "$value" == "none" ]]; then
+    return 0
+  fi
+
+  [[ -n "$value" ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  [[ "$value" != /* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  [[ "$value" != *$'\n'* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  [[ "$value" != */ ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  [[ "$value" != *//* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+
+  rest="$value"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then
+      component="${rest%%/*}"
+      rest="${rest#*/}"
+    else
+      component="$rest"
+      rest=""
+    fi
+    [[ "$component" != "." && "$component" != ".." && -n "$component" ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  done
 }
 
 require_deploy_root() {
@@ -600,6 +635,7 @@ promote_release() {
   local release_id="$1"
   local helper="$2"
   local post_deploy_file="${3:-}"
+  local maintenance_file_value="${4:-$DEFAULT_MAINTENANCE_FILE}"
   local engine_args=()
 
   engine_args=(
@@ -607,6 +643,7 @@ promote_release() {
     --deployment-id "$deployment_id" \
     --release-id "$release_id" \
     --keep-releases "$keep_releases" \
+    --maintenance-file "$maintenance_file_value" \
     --exchange-helper "$helper"
   )
   if [[ -n "$post_deploy_file" ]]; then
@@ -622,11 +659,13 @@ deploy_ref() {
   local value="$3"
   local force="${4:-0}"
   local post_deploy_override="${5:-}"
+  local maintenance_file_override="${6:-}"
   local commit
   local release_id
   local worktree
   local helper
   local effective_post_deploy
+  local effective_maintenance_file
 
   # High-level deploy pipeline: refresh cache, resolve the requested ref,
   # create a unique release instance, stage it into incoming, promote through
@@ -635,6 +674,7 @@ deploy_ref() {
   ensure_state_dirs
   helper="$(ensure_helper)"
   effective_post_deploy="${post_deploy_override:-${post_deploy:-}}"
+  effective_maintenance_file="${maintenance_file_override:-${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}}"
   fetch_repo "$name"
   commit="$(resolve_ref "$name" "$mode" "$value")"
   if [[ "$force" != "1" ]] && current_release_matches "$commit" "${deploy_root:-}"; then
@@ -647,7 +687,7 @@ deploy_ref() {
     cleanup_worktree "$name" "$worktree" "$release_id"
     return 1
   fi
-  if ! promote_release "$release_id" "$helper" "$effective_post_deploy"; then
+  if ! promote_release "$release_id" "$helper" "$effective_post_deploy" "$effective_maintenance_file"; then
     cleanup_worktree "$name" "$worktree" "$release_id"
     return 1
   fi
@@ -1004,7 +1044,7 @@ cmd_doctor() {
     return 1
   fi
 
-  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat; do
+  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat date; do
     if command -v "$command_name" >/dev/null 2>&1; then
       doctor_ok command "$command_name found"
     else
@@ -1099,6 +1139,8 @@ cmd_config() {
   local set_post_deploy=""
   local set_post_deploy_provided=0
   local clear_post_deploy=0
+  local set_maintenance_file=""
+  local set_maintenance_file_provided=0
   local selected=0
 
   require_name "$name"
@@ -1121,6 +1163,11 @@ cmd_config() {
         clear_post_deploy=1
         shift
         ;;
+      --maintenance-file)
+        set_maintenance_file="${2:-}"
+        set_maintenance_file_provided=1
+        shift 2
+        ;;
       *)
         die "unknown config argument: $1"
         ;;
@@ -1131,7 +1178,8 @@ cmd_config() {
   [[ "$clear_deploy_root" -eq 1 ]] && selected=$((selected + 1))
   [[ "$set_post_deploy_provided" -eq 1 ]] && selected=$((selected + 1))
   [[ "$clear_post_deploy" -eq 1 ]] && selected=$((selected + 1))
-  [[ "$selected" -gt 0 ]] || die "config requires --deploy-root, --clear-deploy-root, --post-deploy, or --clear-post-deploy"
+  [[ "$set_maintenance_file_provided" -eq 1 ]] && selected=$((selected + 1))
+  [[ "$selected" -gt 0 ]] || die "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
   [[ "$selected" -eq 1 ]] || die "choose only one config option"
 
   load_config "$name"
@@ -1149,10 +1197,15 @@ cmd_config() {
     post_deploy="$set_post_deploy"
     write_config "$name"
     printf 'configured %s post_deploy=%s\n' "$name" "$post_deploy"
-  else
+  elif [[ "$clear_post_deploy" -eq 1 ]]; then
     post_deploy=""
     write_config "$name"
     printf 'cleared %s post_deploy\n' "$name"
+  else
+    require_maintenance_file "$set_maintenance_file"
+    maintenance_file="$set_maintenance_file"
+    write_config "$name"
+    printf 'configured %s maintenance_file=%s\n' "$name" "$maintenance_file"
   fi
 }
 
@@ -1165,6 +1218,7 @@ cmd_init() {
   local init_default_ref=""
   local init_keep_releases="$DEFAULT_KEEP_RELEASES"
   local init_deploy_root=""
+  local init_maintenance_file="$DEFAULT_MAINTENANCE_FILE"
 
   require_name "$name"
   while (($#)); do
@@ -1193,6 +1247,10 @@ cmd_init() {
         init_deploy_root="${2:-}"
         shift 2
         ;;
+      --maintenance-file)
+        init_maintenance_file="${2:-}"
+        shift 2
+        ;;
       *)
         die "unknown init argument: $1"
         ;;
@@ -1208,6 +1266,7 @@ cmd_init() {
   if [[ -n "$init_deploy_root" ]]; then
     require_deploy_root "$init_deploy_root"
   fi
+  require_maintenance_file "$init_maintenance_file"
 
   ensure_state_dirs
   ensure_helper >/dev/null
@@ -1217,6 +1276,7 @@ cmd_init() {
   default_ref="$init_default_ref"
   keep_releases="$init_keep_releases"
   deploy_root="$init_deploy_root"
+  maintenance_file="$init_maintenance_file"
   ssh_key_path=""
   write_config "$name"
   printf 'initialized %s\n' "$name"
@@ -1229,6 +1289,7 @@ cmd_deploy() {
   local value=""
   local force=0
   local post_deploy_override=""
+  local maintenance_file_override=""
 
   require_name "$name"
   while (($#)); do
@@ -1260,6 +1321,11 @@ cmd_deploy() {
         require_post_deploy_path "$post_deploy_override"
         shift 2
         ;;
+      --maintenance-file)
+        maintenance_file_override="${2:-}"
+        require_maintenance_file "$maintenance_file_override"
+        shift 2
+        ;;
       *)
         die "unknown deploy argument: $1"
         ;;
@@ -1267,7 +1333,7 @@ cmd_deploy() {
   done
 
   [[ -n "$mode" && -n "$value" ]] || die "deploy requires --branch, --tag, or --commit"
-  deploy_ref "$name" "$mode" "$value" "$force" "$post_deploy_override"
+  deploy_ref "$name" "$mode" "$value" "$force" "$post_deploy_override" "$maintenance_file_override"
 }
 
 cmd_update() {
@@ -1275,6 +1341,7 @@ cmd_update() {
   shift || true
   local force=0
   local post_deploy_override=""
+  local maintenance_file_override=""
 
   require_name "$name"
   while (($#)); do
@@ -1288,6 +1355,11 @@ cmd_update() {
         require_post_deploy_path "$post_deploy_override"
         shift 2
         ;;
+      --maintenance-file)
+        maintenance_file_override="${2:-}"
+        require_maintenance_file "$maintenance_file_override"
+        shift 2
+        ;;
       *)
         die "unknown update argument: $1"
         ;;
@@ -1295,7 +1367,7 @@ cmd_update() {
   done
 
   load_config "$name"
-  deploy_ref "$name" branch "$default_ref" "$force" "$post_deploy_override"
+  deploy_ref "$name" branch "$default_ref" "$force" "$post_deploy_override" "$maintenance_file_override"
 }
 
 cmd_rollback() {
@@ -1324,7 +1396,7 @@ cmd_rollback() {
     to="$(select_rollback_release "$current")"
   fi
   [[ -n "$to" ]] || die "no rollback release available"
-  run_engine_subshell --docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --exchange-helper "$helper"
+  run_engine_subshell --docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --maintenance-file "$maintenance_file" --exchange-helper "$helper"
   printf 'rolled back to %s\n' "$to"
 }
 
@@ -1463,6 +1535,7 @@ cmd_status() {
   printf 'keep_releases=%s\n' "$keep_releases"
   printf 'deploy_root=%s\n' "${deploy_root:-}"
   printf 'post_deploy=%s\n' "${post_deploy:-}"
+  printf 'maintenance_file=%s\n' "${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}"
   printf 'current=%s\n' "$(current_release_id || true)"
 }
 
@@ -1470,8 +1543,8 @@ cmd_status() {
 
 engine_usage() {
   cat <<-'USAGE'
-	Usage: wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --release-id ID --keep-releases N [--exchange-helper PATH] [--post-deploy-file PATH] [--print-claims]
-	       wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --rollback-to RELEASE_ID [--exchange-helper PATH]
+	Usage: wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --release-id ID --keep-releases N [--exchange-helper PATH] [--post-deploy-file PATH] [--maintenance-file PATH|none] [--print-claims]
+	       wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --rollback-to RELEASE_ID [--exchange-helper PATH] [--maintenance-file PATH|none]
 	       wpcloud-site-git-deploy __remote-deploy --docroot PATH --assert-public-symlinks
 
 	Promote an uploaded incoming release into the deployment namespace and update current.
@@ -1481,6 +1554,9 @@ engine_usage() {
 	                  Run this bash command file from the docroot after current is
 	                  updated and stale symlinks are cleaned up. Failure exits
 	                  nonzero without rolling back the active release.
+	  --maintenance-file PATH|none
+	                  Create a tool-owned WordPress maintenance marker during
+	                  promotion or rollback. Use none to disable.
 	  --print-claims  Print compressed claims for the incoming release and exit without
 	                  promoting the release or changing current.
 	  --rollback-to RELEASE_ID
@@ -1524,11 +1600,89 @@ cleanup_run_scratch() {
   fi
 }
 
+maintenance_file_enabled() {
+  local maintenance_file="$1"
+
+  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]]
+}
+
+maintenance_path() {
+  local docroot="$1"
+  local maintenance_file="$2"
+
+  printf '%s/%s\n' "$docroot" "$maintenance_file"
+}
+
+maintenance_file_is_tool_owned() {
+  local path="$1"
+  local deployment_id="$2"
+
+  [[ ! -L "$path" && -f "$path" ]] || return 1
+  grep -Fxq "wpcloud-site-git-deploy maintenance" "$path" || return 1
+  grep -Fxq "deployment_id=$deployment_id" "$path" || return 1
+}
+
+cleanup_owned_maintenance_file() {
+  local docroot="$1"
+  local deployment_id="$2"
+  local maintenance_file="$3"
+  local path
+
+  maintenance_file_enabled "$maintenance_file" || return 0
+  path="$(maintenance_path "$docroot" "$maintenance_file")"
+  if maintenance_file_is_tool_owned "$path" "$deployment_id"; then
+    rm -f -- "$path"
+  fi
+}
+
+create_maintenance_file() {
+  local docroot="$1"
+  local deployment_id="$2"
+  local release_id="$3"
+  local maintenance_file="$4"
+  local path
+  local parent
+  local tmp_path
+
+  maintenance_file_enabled "$maintenance_file" || return 0
+
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+  path="$(maintenance_path "$docroot" "$maintenance_file")"
+  [[ ! -e "$path" && ! -L "$path" ]] || return 0
+
+  parent="${path%/*}"
+  [[ -d "$parent" ]] || engine_die "maintenance-file parent does not exist: ${maintenance_file%/*}"
+
+  tmp_path="$path.$$"
+  rm -f -- "$tmp_path"
+  {
+    printf 'wpcloud-site-git-deploy maintenance\n'
+    printf 'deployment_id=%s\n' "$deployment_id"
+    printf 'release_id=%s\n' "$release_id"
+    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$tmp_path"
+  mv -T "$tmp_path" "$path"
+}
+
+ENGINE_MAINTENANCE_DOCROOT=""
+ENGINE_MAINTENANCE_DEPLOYMENT_ID=""
+ENGINE_MAINTENANCE_FILE="none"
+
+cleanup_engine_exit() {
+  cleanup_run_scratch
+  if [[ -n "$ENGINE_MAINTENANCE_DOCROOT" && -n "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" ]]; then
+    cleanup_owned_maintenance_file \
+      "$ENGINE_MAINTENANCE_DOCROOT" \
+      "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" \
+      "$ENGINE_MAINTENANCE_FILE"
+  fi
+}
+
 require_remote_capabilities() {
   local command_name
   local probe_dir
 
-  for command_name in readlink flock find sort comm cut grep cat ln rm mv mkdir mktemp touch; do
+  for command_name in readlink flock find sort comm cut grep cat ln rm mv mkdir mktemp touch date; do
     command -v "$command_name" >/dev/null 2>&1 || engine_die "$command_name is required"
   done
 
@@ -2289,6 +2443,7 @@ rollback_release() {
   local deployment_id="$2"
   local rollback_to="$3"
   local exchange_helper="$4"
+  local maintenance_file="$5"
 
   local base
   local releases_dir
@@ -2307,14 +2462,17 @@ rollback_release() {
 
   acquire_lock "$lock_file"
 
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
   [[ -d "$release_dir" ]] || engine_die "rollback release does not exist: $release_dir"
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
 
   scratch_dir="$(create_scratch_dir "$base")"
+  create_maintenance_file "$docroot" "$deployment_id" "$rollback_to" "$maintenance_file"
   prepare_claim_transition "$docroot" "$deployment_id" "$base" "$release_dir" "$scratch_dir"
   apply_claim_transition "$docroot" "$deployment_id" "$base" "$rollback_to" "$exchange_helper" "$scratch_dir"
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
 
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$rollback_to" >&2
 }
@@ -2326,6 +2484,7 @@ cmd_remote_deploy() {
   local rollback_to=""
   local keep_releases=""
   local post_deploy_file=""
+  local maintenance_file="$DEFAULT_MAINTENANCE_FILE"
   local exchange_helper=""
   local print_claims=0
   local assert_public_symlinks=0
@@ -2373,6 +2532,11 @@ cmd_remote_deploy() {
         post_deploy_file="$2"
         shift 2
         ;;
+      --maintenance-file)
+        (($# >= 2)) || engine_die "--maintenance-file requires a value"
+        maintenance_file="$2"
+        shift 2
+        ;;
       --exchange-helper)
         (($# >= 2)) || engine_die "--exchange-helper requires a value"
         exchange_helper="$2"
@@ -2398,9 +2562,11 @@ cmd_remote_deploy() {
   rollback_to="$(trim "$rollback_to")"
   keep_releases="$(trim "$keep_releases")"
   post_deploy_file="$(trim "$post_deploy_file")"
+  maintenance_file="$(trim "$maintenance_file")"
   exchange_helper="$(trim "$exchange_helper")"
 
   [[ -n "$docroot" ]] || engine_die "docroot is required"
+  require_maintenance_file "$maintenance_file" engine_die
 
   if ((assert_public_symlinks)); then
     trap cleanup_run_scratch EXIT
@@ -2414,7 +2580,10 @@ cmd_remote_deploy() {
     exchange_helper="$(docroot_deployment_base "$docroot" "$deployment_id")/exchange-rename"
   fi
 
-  trap cleanup_run_scratch EXIT
+  ENGINE_MAINTENANCE_DOCROOT="$docroot"
+  ENGINE_MAINTENANCE_DEPLOYMENT_ID="$deployment_id"
+  ENGINE_MAINTENANCE_FILE="$maintenance_file"
+  trap cleanup_engine_exit EXIT
   require_remote_capabilities
 
   if [[ -n "$rollback_to" ]]; then
@@ -2427,7 +2596,7 @@ cmd_remote_deploy() {
     [[ -z "$post_deploy_file" ]] || engine_die "--post-deploy-file cannot be used with --rollback-to"
     ((print_claims == 0)) || engine_die "--print-claims cannot be used with --rollback-to"
     engine_require_id "rollback-to" "$rollback_to"
-    rollback_release "$docroot" "$deployment_id" "$rollback_to" "$exchange_helper"
+    rollback_release "$docroot" "$deployment_id" "$rollback_to" "$exchange_helper" "$maintenance_file"
     return
   fi
 
@@ -2463,6 +2632,7 @@ cmd_remote_deploy() {
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
 
   scratch_dir="$(create_scratch_dir "$base")"
   boundaries_file="$scratch_dir/boundaries"
@@ -2477,6 +2647,7 @@ cmd_remote_deploy() {
 
   [[ ! -e "$release_dir" ]] || engine_die "release already exists: $release_dir"
 
+  create_maintenance_file "$docroot" "$deployment_id" "$release_id" "$maintenance_file"
   prepare_claim_transition "$docroot" "$deployment_id" "$base" "$incoming_release" "$scratch_dir"
   mv "$incoming_release" "$release_dir"
   # Uploaded directory mtimes reflect upload time. Refresh the promoted release
@@ -2484,8 +2655,10 @@ cmd_remote_deploy() {
   touch "$release_dir"
   apply_claim_transition "$docroot" "$deployment_id" "$base" "$release_id" "$exchange_helper" "$scratch_dir"
   if ! run_post_deploy "$docroot" "$post_deploy_file"; then
+    cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
     engine_die "post-deploy failed: $post_deploy_file"
   fi
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
   prune_releases "$releases_dir" "$keep_releases" "$release_id"
 
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$release_id" >&2

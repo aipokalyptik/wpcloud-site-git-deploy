@@ -46,7 +46,7 @@ Required on the site:
 - GNU `find`
 - `ssh-keygen` for deploy-key setup and validation
 - `flock`, `sort`, `comm`, `cut`, `grep`, `cat`, `readlink`, `ln`, `mv`,
-  `rm`, `mkdir`, `mktemp`, `touch`, and `stat`
+  `rm`, `mkdir`, `mktemp`, `touch`, `stat`, and `date`
 - Git LFS only when your repository uses LFS-tracked paths
 
 The shipped `exchange-rename` helper is Linux amd64 and uses
@@ -300,6 +300,19 @@ Post-deploy hooks run from the docroot after `current` flips and stale symlinks
 are cleaned up. If the hook fails, the new release remains active and the
 command exits nonzero; rollback is manual.
 
+Maintenance mode is enabled by default with a tool-owned `.maintenance` marker:
+
+```bash
+wpcloud-site-git-deploy config site --maintenance-file none
+wpcloud-site-git-deploy config site --maintenance-file .maintenance
+wpcloud-site-git-deploy update site --maintenance-file none
+```
+
+When enabled, the marker is created before claim reconciliation and remains
+through the post-deploy hook. The tool removes only marker files it created for
+the same deployment, including stale markers found during later deploys or
+rollbacks.
+
 ## Inspecting State
 
 Show deployment config and active release:
@@ -462,6 +475,9 @@ The tool is deliberately conservative:
 - WordPress shared paths are rejected when present in the deployable tree:
   `wp-content/uploads`, `wp-content/cache`, `wp-content/upgrade`,
   `wp-content/blogs.dir`, and `.maintenance`.
+- Tool-managed maintenance mode removes only files containing this tool's
+  deployment marker. Existing manual or WordPress-created maintenance files are
+  preserved.
 - Existing public paths are reclaimed only through the Linux
   `exchange-rename` helper.
 - Deploy-time assertions validate only the final claims owned by that
@@ -510,12 +526,12 @@ Common failures:
 ## Command Reference
 
 ```text
-wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
-wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root | --post-deploy PATH | --clear-post-deploy]
-wpcloud-site-git-deploy deploy <name> --branch BRANCH [--force] [--post-deploy PATH]
-wpcloud-site-git-deploy deploy <name> --tag TAG [--force] [--post-deploy PATH]
-wpcloud-site-git-deploy deploy <name> --commit SHA [--force] [--post-deploy PATH]
-wpcloud-site-git-deploy update <name> [--force] [--post-deploy PATH]
+wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH] [--maintenance-file PATH|none]
+wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root | --post-deploy PATH | --clear-post-deploy | --maintenance-file PATH|none]
+wpcloud-site-git-deploy deploy <name> --branch BRANCH [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+wpcloud-site-git-deploy deploy <name> --tag TAG [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+wpcloud-site-git-deploy deploy <name> --commit SHA [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
+wpcloud-site-git-deploy update <name> [--force] [--post-deploy PATH] [--maintenance-file PATH|none]
 wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
 wpcloud-site-git-deploy releases <name>
 wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]

@@ -56,12 +56,14 @@ assert_contains "--use-key PATH" "$tmpdir/help.txt"
 assert_contains "--import-key PATH" "$tmpdir/help.txt"
 assert_contains "--force" "$tmpdir/help.txt"
 assert_contains "--post-deploy PATH" "$tmpdir/help.txt"
+assert_contains "--maintenance-file PATH|none" "$tmpdir/help.txt"
 assert_contains "--help" "$tmpdir/help.txt"
 assert_contains "--version" "$tmpdir/help.txt"
 assert_contains "wpcloud-site-git-deploy auth site --use-key" "$repo_root/README.md"
 assert_contains "wpcloud-site-git-deploy auth site --import-key" "$repo_root/README.md"
 assert_contains "wpcloud-site-git-deploy update site --force" "$repo_root/README.md"
 assert_contains "wpcloud-site-git-deploy config site --post-deploy" "$repo_root/README.md"
+assert_contains "wpcloud-site-git-deploy config site --maintenance-file none" "$repo_root/README.md"
 
 awk '
   /write_release_metadata\(\)/ { in_func=1 }
@@ -208,8 +210,13 @@ fi
 HOME="$home_dir" "$cli" releases site >"$tmpdir/releases.txt"
 assert_contains "$feature_commit" "$tmpdir/releases.txt"
 
+cat >"$docroot/.maintenance" <<'EOF'
+wpcloud-site-git-deploy maintenance
+deployment_id=site
+EOF
 HOME="$home_dir" "$cli" rollback site >/dev/null
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "rollback did not restore prior release"
+[[ ! -e "$docroot/.maintenance" ]] || fail "rollback should remove stale tool-owned maintenance file"
 if HOME="$home_dir" "$cli" rollback site --to missing-release >"$tmpdir/rollback-missing.txt" 2>&1; then
   fail "rollback to missing release should fail"
 fi
@@ -286,42 +293,63 @@ post_marker="$tmpdir/post-deploy-marker.txt"
 configured_hook="$tmpdir/configured-post-deploy.sh"
 override_hook="$tmpdir/override-post-deploy.sh"
 failing_hook="$tmpdir/failing-post-deploy.sh"
+no_maintenance_hook="$tmpdir/no-maintenance-post-deploy.sh"
 cat >"$configured_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+test -f .maintenance
+grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'configured:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 SH
 cat >"$override_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+test -f .maintenance
+grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'override:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 SH
 cat >"$failing_hook" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+test -f .maintenance
+grep -F 'wpcloud-site-git-deploy maintenance' .maintenance >/dev/null
 printf 'failing:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
 exit 23
 SH
-chmod +x "$configured_hook" "$override_hook" "$failing_hook"
+cat >"$no_maintenance_hook" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+test ! -e .maintenance
+printf 'no-maintenance:%s:%s\n' "\$PWD" "\$(cat index.html)" >>"$post_marker"
+SH
+chmod +x "$configured_hook" "$override_hook" "$failing_hook" "$no_maintenance_hook"
 if HOME="$home_dir" "$cli" config site --post-deploy "" >"$tmpdir/empty-post-deploy.out" 2>"$tmpdir/empty-post-deploy.err"; then
   fail "empty post-deploy config should fail"
 fi
 assert_contains "post-deploy path must not be empty" "$tmpdir/empty-post-deploy.err"
+if HOME="$home_dir" "$cli" config site --maintenance-file "" >"$tmpdir/empty-maintenance-file.out" 2>"$tmpdir/empty-maintenance-file.err"; then
+  fail "empty maintenance-file config should fail"
+fi
+assert_contains "maintenance-file must be a safe relative path or none" "$tmpdir/empty-maintenance-file.err"
 HOME="$home_dir" "$cli" config site --post-deploy "$configured_hook" >/dev/null
 HOME="$home_dir" "$cli" status site >"$tmpdir/status-post-deploy.txt"
 assert_contains "post_deploy=$configured_hook" "$tmpdir/status-post-deploy.txt"
+assert_contains "maintenance_file=.maintenance" "$tmpdir/status-post-deploy.txt"
 printf 'post deploy content\n' >"$source_repo/index.html"
 git -C "$source_repo" add index.html
 git -C "$source_repo" commit -m "post deploy content" >/dev/null
 post_commit="$(git -C "$source_repo" rev-parse HEAD)"
 HOME="$home_dir" "$cli" update site >/dev/null
 assert_contains "configured:$docroot:post deploy content" "$post_marker"
+[[ ! -e "$docroot/.maintenance" ]] || fail "successful post-deploy should remove maintenance file"
 configured_runs_before="$(grep -c '^configured:' "$post_marker")"
 HOME="$home_dir" "$cli" update site --force >/dev/null
 configured_runs_after="$(grep -c '^configured:' "$post_marker")"
 [[ "$configured_runs_after" -eq $((configured_runs_before + 1)) ]] || fail "configured post-deploy should run again on update --force"
+[[ ! -e "$docroot/.maintenance" ]] || fail "forced update should remove maintenance file"
 HOME="$home_dir" "$cli" update site --force --post-deploy "$override_hook" >/dev/null
 assert_contains "override:$docroot:post deploy content" "$post_marker"
+[[ ! -e "$docroot/.maintenance" ]] || fail "post-deploy override should remove maintenance file"
 override_runs="$(grep -c '^override:' "$post_marker")"
 configured_runs_after_override="$(grep -c '^configured:' "$post_marker")"
 [[ "$override_runs" == "1" ]] || fail "--post-deploy override should run exactly once"
@@ -334,6 +362,13 @@ after_failing_current="$(HOME="$home_dir" "$cli" status site | awk -F= '/^curren
 [[ -n "$after_failing_current" && "$after_failing_current" != "$before_failing_current" ]] || fail "failing post-deploy should leave newly promoted release current"
 assert_contains "failing:$docroot:post deploy content" "$post_marker"
 assert_contains "post-deploy failed: $failing_hook" "$tmpdir/failing-post-deploy.err"
+[[ ! -e "$docroot/.maintenance" ]] || fail "failing post-deploy should remove tool-owned maintenance file"
+HOME="$home_dir" "$cli" config site --maintenance-file none >/dev/null
+HOME="$home_dir" "$cli" status site >"$tmpdir/status-maintenance-none.txt"
+assert_contains "maintenance_file=none" "$tmpdir/status-maintenance-none.txt"
+HOME="$home_dir" "$cli" update site --force --post-deploy "$no_maintenance_hook" >/dev/null
+assert_contains "no-maintenance:$docroot:post deploy content" "$post_marker"
+[[ ! -e "$docroot/.maintenance" ]] || fail "maintenance-file none should not create maintenance file"
 HOME="$home_dir" "$cli" config site --clear-post-deploy >/dev/null
 HOME="$home_dir" "$cli" status site >"$tmpdir/status-post-deploy-cleared.txt"
 assert_contains "post_deploy=" "$tmpdir/status-post-deploy-cleared.txt"

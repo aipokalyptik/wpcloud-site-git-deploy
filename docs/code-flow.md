@@ -11,13 +11,13 @@ flowchart TD
   B --> C["main(): dispatch command"]
 
   C -->|init| I["cmd_init"]
-  I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases, deploy-root"]
+  I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases, deploy-root, maintenance_file"]
   I1 --> I2["ensure_state_dirs"]
   I2 --> I3["ensure_helper: use managed helper, PATH helper, or install exchange-rename if needed"]
   I3 --> I4["Write deployment config under $HOME/.wpcloud-site-git-deploy/deployments"]
 
   C -->|config| CFG["cmd_config"]
-  CFG --> CFG1["Set or clear deploy_root or post_deploy in deployment config"]
+  CFG --> CFG1["Set or clear deploy_root, post_deploy, or maintenance_file in deployment config"]
 
   C -->|auth| AU["cmd_auth"]
   AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize HTTPS URL to SSH when applicable"]
@@ -32,11 +32,11 @@ flowchart TD
   DOC2 --> DOC3["Optionally run git ls-remote through configured GIT_SSH_COMMAND"]
 
   C -->|deploy| D["cmd_deploy"]
-  D --> D1["Parse exactly one ref plus optional --force and --post-deploy"]
+  D --> D1["Parse exactly one ref plus optional --force, --post-deploy, and --maintenance-file"]
   D1 --> DR["deploy_ref"]
 
   C -->|update| U["cmd_update"]
-  U --> U1["Parse optional --force and --post-deploy, then load_config"]
+  U --> U1["Parse optional --force, --post-deploy, and --maintenance-file, then load_config"]
   U1 --> DR
 
   DR --> DR1["load_config"]
@@ -60,7 +60,8 @@ flowchart TD
   PR --> RDE["run_engine_subshell -> cmd_remote_deploy --release-id"]
   RDE --> ERQ["require_remote_capabilities"]
   ERQ --> ELOCK["Acquire deploy lock"]
-  ELOCK --> EPCT["prepare_claim_transition"]
+  ELOCK --> EMNT["Clean stale owned maintenance marker and create current marker unless disabled"]
+  EMNT --> EPCT["prepare_claim_transition"]
   EPCT --> EPCT1["discover_boundary_claims"]
   EPCT1 --> EPCT2["discover_protected_anchors"]
   EPCT2 --> EPCT3["compute old claims + materialized public claims"]
@@ -77,7 +78,8 @@ flowchart TD
   EACT5 --> EACT6["cleanup exchanged paths and removed claims"]
   EACT6 --> EACT7["assert_claim_symlinks_under_docroot"]
   EACT7 --> POST["run_post_deploy when --post-deploy-file was provided"]
-  POST --> PRUNE["prune_releases"]
+  POST --> RMNT["Remove owned maintenance marker"]
+  RMNT --> PRUNE["prune_releases"]
   PRUNE --> ENGRET["Engine subshell returns to deploy_ref"]
   ENGRET --> META["write_release_metadata"]
   META --> CLEAN["cleanup_worktree"]
@@ -92,11 +94,13 @@ flowchart TD
   RB4 --> RBR
   RBR --> RRC["require_remote_capabilities"]
   RRC --> RLOCK["Acquire deploy lock"]
-  RLOCK --> RPCT["prepare_claim_transition for existing release"]
+  RLOCK --> RMNT1["Clean stale owned maintenance marker and create rollback marker unless disabled"]
+  RMNT1 --> RPCT["prepare_claim_transition for existing release"]
   RPCT --> RACT["apply_claim_transition"]
   RACT --> RACT1["switch_current atomically and clean removed claims"]
   RACT1 --> RACT2["assert_claim_symlinks_under_docroot"]
-  RACT2 --> RRET["Engine subshell returns to cmd_rollback"]
+  RACT2 --> RMNT2["Remove owned maintenance marker"]
+  RMNT2 --> RRET["Engine subshell returns to cmd_rollback"]
   RRET --> RBOUT["Print rolled back release"]
 
   C -->|releases| REL["cmd_releases"]
