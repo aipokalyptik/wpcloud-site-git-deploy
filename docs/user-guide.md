@@ -274,7 +274,7 @@ wpcloud-site-git-deploy update site
 
 If the resolved commit and deploy root already match the active release,
 `deploy` and `update` print a `no-op ...` line and exit successfully without
-creating a new release. This makes `update` safe for cron.
+creating a new release. This makes `update` safe for WP Cloud API cron.
 
 ## Inspecting State
 

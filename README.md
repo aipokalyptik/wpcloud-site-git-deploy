@@ -14,8 +14,8 @@ embedded in the CLI and is not installed as a separate `lib/` file.
   installation, setup, authentication, deploys, rollbacks, safety behavior, and
   troubleshooting.
 - [docs/recipes.md](docs/recipes.md) contains copyable how-to recipes for
-  cron updates, GitHub Actions, multiple repositories, monorepos, deploy roots,
-  rollback workflows, Git LFS, and submodules.
+  WP Cloud API cron updates, GitHub Actions, multiple repositories, monorepos,
+  deploy roots, rollback workflows, Git LFS, and submodules.
 - [docs/code-flow.md](docs/code-flow.md) explains the main CLI and embedded
   remote deployment flow for maintainers.
 - [docs/testing.md](docs/testing.md) explains local verification, CI, and the

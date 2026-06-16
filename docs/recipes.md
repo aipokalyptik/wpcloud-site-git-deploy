@@ -91,30 +91,83 @@ key from the host, and verify:
 wpcloud-site-git-deploy doctor site
 ```
 
-## Keep A Site Fresh With Cron
+## Keep A Site Fresh With WP Cloud API Cron
 
 `update` is safe for cron because it is a no-op when the fetched commit and
 deploy root already match the active release.
 
-Edit the site user's crontab:
+WP Cloud does not provide traditional `crontab -e` access for the site SSH
+user. Use the WP Cloud API cron endpoints from a trusted management machine
+whose IP address is allowed for the API key.
 
 ```bash
-crontab -e
+export WPCLOUD_API_KEY="..."
+export WPCLOUD_SITE="example.com"
+export WPCLOUD_API_BASE="https://atomic-api.wordpress.com/api/v1.0"
 ```
 
-Run every five minutes:
+Create a command that runs on the site. Keep `$HOME` unexpanded locally so it
+resolves in the site's cron execution environment:
 
-```cron
-*/5 * * * * PATH="$HOME/.wpcloud-site-git-deploy/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" wpcloud-site-git-deploy update site >> "$HOME/.wpcloud-site-git-deploy/cron-site.log" 2>&1
+```bash
+COMMAND='bash -lc '\''export PATH="$HOME/.wpcloud-site-git-deploy/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"; wpcloud-site-git-deploy update site >> "$HOME/.wpcloud-site-git-deploy/cron-site.log" 2>&1'\'''
+```
+
+Run every five minutes. `12h` means twelve times per hour; if your site has
+WP Cloud advanced cron enabled, you can use the full crontab expression
+`*/5 * * * *` instead.
+
+```bash
+curl -sS -X POST \
+  -H "Auth: $WPCLOUD_API_KEY" \
+  --data-urlencode "schedule=12h" \
+  --data-urlencode "command=$COMMAND" \
+  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/add"
 ```
 
 Run every hour:
 
-```cron
-0 * * * * PATH="$HOME/.wpcloud-site-git-deploy/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" wpcloud-site-git-deploy update site >> "$HOME/.wpcloud-site-git-deploy/cron-site.log" 2>&1
+```bash
+curl -sS -X POST \
+  -H "Auth: $WPCLOUD_API_KEY" \
+  --data-urlencode "schedule=hourly" \
+  --data-urlencode "command=$COMMAND" \
+  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/add"
 ```
 
-Check recent cron output:
+List configured cron entries and note the `cron_id`:
+
+```bash
+curl -sS \
+  -H "Auth: $WPCLOUD_API_KEY" \
+  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/list"
+```
+
+Update an existing cron entry's command:
+
+```bash
+curl -sS -X POST \
+  -H "Auth: $WPCLOUD_API_KEY" \
+  --data-urlencode "command=$COMMAND" \
+  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/update/CRON_ID"
+```
+
+Remove a cron entry:
+
+```bash
+curl -sS -X POST \
+  -H "Auth: $WPCLOUD_API_KEY" \
+  --data-urlencode "cron_id=CRON_ID" \
+  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/remove"
+```
+
+The WP Cloud API runs cron commands in an SSH-like environment, supports shell
+scripts for multi-step logic, skips a cron entry if its previous execution has
+not finished, and reports failed entries through the `site-cron-results`
+webhook. Each cron entry has an eight-hour maximum runtime, and up to three
+cron entries can run concurrently per site.
+
+Check recent cron output over SSH:
 
 ```bash
 tail -100 "$HOME/.wpcloud-site-git-deploy/cron-site.log"
