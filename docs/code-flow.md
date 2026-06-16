@@ -20,7 +20,7 @@ flowchart TD
   CFG --> CFG1["Set or clear deploy_root in deployment config"]
 
   C -->|auth| AU["cmd_auth"]
-  AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize GitHub HTTPS URL to SSH when applicable"]
+  AU --> AU1["Load deployment config, optionally remove ssh_key_path, or normalize HTTPS URL to SSH when applicable"]
   AU1 --> AU2["Choose auth source: generate/reuse managed key, --use-key external key, or --import-key managed copy"]
   AU2 --> AU3["Validate private key permissions and derive public key without prompting"]
   AU3 --> AU4["Store ssh_key_path in deployment config"]

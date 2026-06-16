@@ -105,8 +105,7 @@ Set up repository access:
 wpcloud-site-git-deploy auth site
 ```
 
-For GitHub HTTPS URLs, `auth` converts the stored URL to SSH form. For other
-Git providers, initialize with that provider's SSH URL before running `auth`.
+For HTTPS URLs, `auth` converts the stored URL to `git@host:path` SSH form.
 Add the printed public key to the repository as a read-only deploy key, then
 validate:
 
@@ -148,8 +147,8 @@ $HOME/.wpcloud-site-git-deploy/keys/site_ed25519
 
 Add the printed public key to your Git host as a read-only deploy key. For
 GitHub, add it under repository settings, not under your personal account keys.
-For non-GitHub hosts, initialize with the provider's SSH URL, for example
-`git@git.example.com:team/site-content.git`.
+For HTTPS URLs, `auth` converts the stored URL to the equivalent SSH form
+before writing the key path.
 
 ### Use An Existing Key In Place
 

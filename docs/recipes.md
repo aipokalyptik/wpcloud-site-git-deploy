@@ -41,9 +41,19 @@ wpcloud-site-git-deploy doctor site
 wpcloud-site-git-deploy update site
 ```
 
-For non-GitHub providers, prefer the provider's SSH URL at `init` time, such as
-`git@git.example.com:team/site-content.git`. GitHub HTTPS URLs are a
-convenience exception: `auth` converts them to SSH before storing the key path.
+HTTPS repository URLs are accepted for deploy-key setup. `auth` converts them
+to `git@host:path` SSH form before storing the key path, so this works for
+GitHub and for other providers that use the standard Git SSH convention:
+
+```bash
+wpcloud-site-git-deploy init gitlab-site \
+  --repo https://gitlab.com/example/site-content.git \
+  --docroot /srv/htdocs \
+  --deployment-id gitlab-site \
+  --default-ref main
+
+wpcloud-site-git-deploy auth gitlab-site
+```
 
 If the repository is public HTTPS, local, or already readable through the site
 user's default Git credentials, skip `auth` and run `doctor`; it will warn that

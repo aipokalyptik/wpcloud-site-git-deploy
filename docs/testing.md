@@ -27,7 +27,7 @@ The suite runs:
   repositories, cached inspection checks, rollback, worktree cleanup, no-op
   deploys, deploy-root behavior, hardlink reuse, and Git LFS behavior.
 - `tests/test_auth_doctor.sh`, a setup-focused test for deploy-key generation,
-  existing-key use, managed key import, auth removal, GitHub HTTPS-to-SSH
+  existing-key use, managed key import, auth removal, HTTPS-to-SSH
   conversion, generic SSH guidance, key validation failures, doctor
   diagnostics, and configured `GIT_SSH_COMMAND` verification.
 - `tests/test_remote_invariants.sh`, a direct test of the embedded

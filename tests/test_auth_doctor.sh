@@ -289,19 +289,24 @@ HOME="$generic_home" "$cli" init generic \
 HOME="$generic_home" "$cli" auth generic >"$tmpdir/auth-generic.txt"
 assert_contains "Add this public key to the repository host for git.example.com" "$tmpdir/auth-generic.txt"
 
-bad_home="$tmpdir/bad-home"
-bad_docroot="$tmpdir/bad-docroot"
-mkdir -p "$bad_home" "$bad_docroot"
-HOME="$bad_home" "$cli" init bad \
+https_home="$tmpdir/https-home"
+https_docroot="$tmpdir/https-docroot"
+mkdir -p "$https_home" "$https_docroot"
+HOME="$https_home" "$cli" init https-site \
   --repo https://git.example.com/team/site.git \
-  --docroot "$bad_docroot" \
-  --deployment-id bad \
+  --docroot "$https_docroot" \
+  --deployment-id https-site \
   --default-ref main >/dev/null
-if HOME="$bad_home" "$cli" auth bad >"$tmpdir/auth-bad.txt" 2>&1; then
-  fail "auth should reject generic HTTPS remotes"
-fi
-assert_contains "generic HTTPS repository URLs cannot be configured for deploy keys automatically" "$tmpdir/auth-bad.txt"
-HOME="$bad_home" "$cli" doctor bad >"$tmpdir/doctor-generic-https.txt"
+HOME="$https_home" "$cli" auth https-site --verify >"$tmpdir/auth-generic-https.txt"
+https_config_file="$https_home/.wpcloud-site-git-deploy/deployments/https-site.env"
+https_key_path="$https_home/.wpcloud-site-git-deploy/keys/https-site_ed25519"
+assert_contains "repo_url=git@git.example.com:team/site.git" "$https_config_file"
+assert_contains "ssh_key_path=$https_key_path" "$https_config_file"
+assert_contains "Add this public key to the repository host for git.example.com" "$tmpdir/auth-generic-https.txt"
+assert_contains "Verified remote access for git@git.example.com:team/site.git" "$tmpdir/auth-generic-https.txt"
+assert_contains "git ls-remote git@git.example.com:team/site.git HEAD GIT_SSH_COMMAND=ssh -i $https_key_path" "$tmpdir/git.log"
+HOME="$https_home" "$cli" auth https-site --remove >/dev/null
+HOME="$https_home" "$cli" doctor https-site >"$tmpdir/doctor-generic-https.txt"
 assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-generic-https.txt"
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-generic-https.txt"
 no_keygen_public_bin="$tmpdir/no-keygen-public-bin"
@@ -311,7 +316,7 @@ for command_name in bash rsync find flock sort comm cut grep readlink ln rm mv m
   ln -s "$command_path" "$no_keygen_public_bin/$command_name"
 done
 ln -s "$fake_bin/git" "$no_keygen_public_bin/git"
-HOME="$bad_home" PATH="$no_keygen_public_bin" "$cli" doctor bad >"$tmpdir/doctor-generic-https-no-keygen.txt"
+HOME="$https_home" PATH="$no_keygen_public_bin" "$cli" doctor https-site >"$tmpdir/doctor-generic-https-no-keygen.txt"
 assert_contains "WARN command: ssh-keygen not found" "$tmpdir/doctor-generic-https-no-keygen.txt"
 assert_contains "WARN ssh-key: no deploy key configured" "$tmpdir/doctor-generic-https-no-keygen.txt"
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-generic-https-no-keygen.txt"

@@ -686,21 +686,24 @@ repo_host_from_url() {
   return 1
 }
 
-github_https_to_ssh() {
+https_to_ssh() {
   local url="$1"
+  local host
   local path
 
-  [[ "$url" =~ ^https://github\.com/(.+)$ ]] || return 1
-  path="${BASH_REMATCH[1]}"
+  [[ "$url" =~ ^https://([^/]+)/(.+)$ ]] || return 1
+  host="${BASH_REMATCH[1]}"
+  path="${BASH_REMATCH[2]}"
   path="${path#/}"
+  [[ -n "$host" ]] || return 1
   [[ -n "$path" ]] || return 1
-  printf 'git@github.com:%s\n' "$path"
+  printf 'git@%s:%s\n' "$host" "$path"
 }
 
 repo_url_supports_auth() {
   local url="$1"
 
-  [[ "$url" =~ ^[^@:/]+@[^:/]+:.+$ || "$url" =~ ^ssh://[^@]+@[^/]+/.+$ || "$url" =~ ^https://github\.com/.+$ ]]
+  [[ "$url" =~ ^[^@:/]+@[^:/]+:.+$ || "$url" =~ ^ssh://[^@]+@[^/]+/.+$ ]]
 }
 
 private_key_mode() {
@@ -855,13 +858,10 @@ cmd_auth() {
     die "--force-new-key can only be used with generated or imported keys"
   fi
 
-  if [[ "$repo_url" =~ ^https:// && ! "$repo_url" =~ ^https://github\.com/ ]]; then
-    die "generic HTTPS repository URLs cannot be configured for deploy keys automatically; reinitialize or edit the repo URL to an SSH URL"
+  if [[ "$repo_url" =~ ^https:// ]]; then
+    repo_url="$(https_to_ssh "$repo_url")" || die "could not convert HTTPS URL to SSH"
   fi
-  if [[ "$repo_url" =~ ^https://github\.com/ ]]; then
-    repo_url="$(github_https_to_ssh "$repo_url")" || die "could not convert GitHub HTTPS URL to SSH"
-  fi
-  repo_url_supports_auth "$repo_url" || die "repository URL is not an SSH or GitHub HTTPS URL: $repo_url"
+  repo_url_supports_auth "$repo_url" || die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
 
   key_path="$KEYS_DIR/${name}_ed25519"
   if [[ -n "$use_key" ]]; then

@@ -80,7 +80,7 @@ wpcloud-site-git-deploy init site \
 
 wpcloud-site-git-deploy auth site
 # Add the printed public key to the repository as a read-only deploy key.
-# For GitHub HTTPS URLs, auth stores the equivalent SSH URL.
+# For HTTPS URLs, auth stores the equivalent SSH URL.
 # For public HTTPS or already-authenticated remotes, doctor can validate access
 # without a tool-managed deploy key.
 wpcloud-site-git-deploy doctor site
@@ -160,10 +160,8 @@ wpcloud-site-git-deploy auth site
 `auth` creates or reuses
 `$HOME/.wpcloud-site-git-deploy/keys/site_ed25519`, stores that path in the
 deployment config, and prints the public key to add to the repository host as a
-read-only deploy key. For GitHub HTTPS URLs, it converts the stored repository
-URL to the equivalent SSH URL before writing the key path. For other Git hosts,
-initialize with the provider's SSH URL, for example
-`git@git.example.com:team/site-content.git`.
+read-only deploy key. For HTTPS URLs, it converts the stored repository URL to
+the equivalent `git@host:path` SSH URL before writing the key path.
 
 To use an existing private key in place, keep the file under your own control
 and point the deployment at it:
