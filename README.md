@@ -2,7 +2,7 @@
 
 `wpcloud-site-git-deploy` is a Bash CLI for deploying a Git repository from an SSH session on a WP Cloud or Pressable site.
 
-It keeps Git checkouts, config, and credentials under `$HOME`, but copies every web-visible release into the docroot deployment namespace before promotion. Public symlinks are always relative links into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/current/...`; they never point back into `$HOME`.
+It keeps Git checkouts, config, and credentials under `$HOME`, but copies every web-visible release into the docroot deployment namespace before promotion. Public symlinks are always relative links into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/current/...`; they never point back into `$HOME`.
 
 The installed runtime is intentionally small: one Bash CLI plus a static Linux
 `exchange-rename` helper for atomic path swaps. The remote promotion engine is
@@ -233,7 +233,7 @@ Each deploy:
 2. Resolves the requested branch, tag, commit, or configured default ref.
 3. Creates a clean worktree under `$HOME/.wpcloud-site-git-deploy/tmp/`.
 4. Prepares Git LFS files and submodules when present.
-5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
+5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
 6. Promotes that incoming tree to `releases/<release-id>/`.
 7. Reconciles public symlinks and atomically flips `current`.
 

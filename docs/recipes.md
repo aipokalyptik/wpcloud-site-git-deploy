@@ -674,7 +674,7 @@ rm -f "$HOME/.wpcloud-site-git-deploy/deployments/site.env"
 This stops CLI management for that `<name>`, but it does not unpublish the site
 or take any public path down. The last deployed release continues serving
 through the existing public symlinks, the
-`/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/` namespace remains
+`/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/` namespace remains
 on disk, and the repo cache under
 `$HOME/.wpcloud-site-git-deploy/repos/<name>/` is left in place. Temporary
 state under `$HOME/.wpcloud-site-git-deploy/tmp/` may also remain if earlier

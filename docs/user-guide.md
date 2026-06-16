@@ -7,7 +7,7 @@ HTTP requests do not have access to the SSH user's `$HOME`.
 
 The tool keeps Git state, deployment configuration, temporary worktrees, and
 deploy keys under `$HOME/.wpcloud-site-git-deploy`. It copies each web-visible
-release into `/srv/htdocs/.github-ssh-deploy/deployments/<deployment-id>/` and
+release into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/` and
 then exposes files through relative public symlinks under `/srv/htdocs`.
 
 ## Mental Model

@@ -4,6 +4,10 @@ set -euo pipefail
 readonly VERSION="1.1.2"
 # Default number of promoted docroot releases retained for rollback.
 readonly DEFAULT_KEEP_RELEASES="3"
+# Web-visible deployment namespace under the docroot.
+readonly DOCROOT_NAMESPACE=".wpcloud-site-git-deploy"
+readonly DOCROOT_NAMESPACE_SUFFIX="${DOCROOT_NAMESPACE#.}"
+readonly DOCROOT_NAMESPACE_REGEX="\\.wpcloud-site-git-deploy"
 # Metadata keys written for each successful release and accepted by the
 # non-executing metadata reader.
 readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
@@ -71,6 +75,13 @@ shell_quote() {
 config_path() {
   local name="$1"
   printf '%s/%s.env\n' "$DEPLOYMENTS_DIR" "$name"
+}
+
+docroot_deployment_base() {
+  local root="$1"
+  local id="$2"
+
+  printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
 }
 
 write_config_value() {
@@ -415,13 +426,16 @@ cleanup_worktree_path() {
 copy_worktree_to_incoming() {
   local worktree="$1"
   local release_id="$2"
-  local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
-  local incoming="$docroot/.github-ssh-deploy/deployments/$deployment_id/incoming/$release_id"
+  local base
+  local incoming
   local deploy_source="$worktree"
   local exclude_file="$TMP_DIR/excludes.$$.txt"
   local current_release=""
   local link_dest=""
   local rsync_args=()
+
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  incoming="$base/incoming/$release_id"
 
   # Stage the exact filesystem that will become the next release. deploy_root
   # makes a repository subdirectory behave as the docroot root, while link_dest
@@ -456,11 +470,13 @@ write_release_metadata() {
   local mode="$2"
   local ref_value="$3"
   local commit="$4"
-  local metadata_dir="$docroot/.github-ssh-deploy/deployments/$deployment_id/metadata"
-  local metadata_file="$metadata_dir/$release_id.env"
+  local metadata_dir
+  local metadata_file
   local key
   local value
 
+  metadata_dir="$(docroot_deployment_base "$docroot" "$deployment_id")/metadata"
+  metadata_file="$metadata_dir/$release_id.env"
   mkdir -p "$metadata_dir"
   {
     for key in "${RELEASE_METADATA_KEYS[@]}"; do
@@ -542,7 +558,7 @@ current_release_metadata_file() {
 
   current="$(current_release_id || true)"
   [[ -n "$current" ]] || return 1
-  metadata_file="$docroot/.github-ssh-deploy/deployments/$deployment_id/metadata/$current.env"
+  metadata_file="$(docroot_deployment_base "$docroot" "$deployment_id")/metadata/$current.env"
   [[ -f "$metadata_file" ]] || return 1
   printf '%s\n' "$metadata_file"
 }
@@ -619,13 +635,15 @@ deploy_ref() {
 }
 
 current_release_id() {
-  local current="$docroot/.github-ssh-deploy/deployments/$deployment_id/current"
+  local current
+
+  current="$(docroot_deployment_base "$docroot" "$deployment_id")/current"
   [[ -L "$current" ]] || return 1
   readlink "$current" | sed 's#^releases/##'
 }
 
 select_rollback_release() {
-  local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
+  local base
   local current="${1:-}"
   local metadata_file
   local release_name
@@ -635,6 +653,7 @@ select_rollback_release() {
   # moved but before current is switched. Success metadata is written only after
   # promotion completes, so default rollback should prefer metadata-backed
   # releases instead of blindly picking the newest directory.
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   : >"$metadata_candidates"
   find "$base/metadata" -mindepth 1 -maxdepth 1 -type f -name '*.env' 2>/dev/null |
     while IFS= read -r metadata_file; do
@@ -1239,7 +1258,7 @@ cmd_releases() {
   local deploy_root
 
   load_config "$name"
-  base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   current="$(current_release_id || true)"
   find "$base/releases" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r |
   while IFS= read -r release; do
@@ -1433,7 +1452,7 @@ require_remote_capabilities() {
   # Later pruning depends on GNU find's timestamp output, and sticky/protected
   # discovery uses GNU-style predicates. Probing -printf is the cheap proxy for
   # GNU find as a whole.
-  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/github-ssh-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
   if ! find "$probe_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >/dev/null 2>&1; then
     rm -rf -- "$probe_dir"
     engine_die "GNU find with -printf is required"
@@ -1466,7 +1485,7 @@ assert_public_symlinks_under_docroot() {
   # Public symlinks must be usable by HTTP. On WP Cloud, $HOME exists in SSH
   # sessions but is not mounted for web requests, so any target outside docroot
   # is a broken deployment even if it works over SSH.
-  { find "$docroot" -path "$docroot/.github-ssh-deploy" -prune -o -type l -print0 2>/dev/null || true; } |
+  { find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 2>/dev/null || true; } |
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
 
@@ -1627,7 +1646,7 @@ public_symlink_target() {
   local prefix=""
 
   # Build a relative target from the claim's parent directory. Example:
-  # wp-content/plugins/foo -> ../../.github-ssh-deploy/.../current/wp-content/plugins/foo
+  # wp-content/plugins/foo -> ../../.wpcloud-site-git-deploy/.../current/wp-content/plugins/foo
   if [[ "$parent" == */* ]]; then
     parent="${parent%/*}"
     while [[ -n "$parent" ]]; do
@@ -1640,7 +1659,7 @@ public_symlink_target() {
     done
   fi
 
-  printf '%s.github-ssh-deploy/deployments/%s/current/%s\n' "$prefix" "$deployment_id" "$claim"
+  printf '%s%s/deployments/%s/current/%s\n' "$prefix" "$DOCROOT_NAMESPACE" "$deployment_id" "$claim"
 }
 
 reconcile_new_claims() {
@@ -1661,7 +1680,7 @@ reconcile_new_claims() {
     public_path="$docroot/$claim"
     parent_dir="${public_path%/*}"
     target="$(public_symlink_target "$deployment_id" "$claim")"
-    tmp_link="$parent_dir/.${public_path##*/}.github-ssh-deploy.$$"
+    tmp_link="$parent_dir/.${public_path##*/}.$DOCROOT_NAMESPACE_SUFFIX.$$"
 
     reject_foreign_deployment_ancestor_claim "$docroot" "$deployment_id" "$claim"
     mkdir -p -- "$parent_dir"
@@ -1717,7 +1736,7 @@ compute_removed_claims() {
 deployment_owner_from_target() {
   local target="$1"
 
-  if [[ "$target" =~ (^|/)\.github-ssh-deploy/deployments/([^/]+)/current($|/) ]]; then
+  if [[ "$target" =~ (^|/)$DOCROOT_NAMESPACE_REGEX/deployments/([^/]+)/current($|/) ]]; then
     printf '%s\n' "${BASH_REMATCH[2]}"
     return 0
   fi
@@ -1859,7 +1878,7 @@ discover_materialized_public_claims() {
   : >"$claims_tmp"
 
   # shellcheck disable=SC2094
-  { find "$docroot" -path "$docroot/.github-ssh-deploy" -prune -o -type l -print0 2>/dev/null || true; } |
+  { find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 2>/dev/null || true; } |
   while IFS= read -r -d '' link_path; do
     claim="${link_path#"$docroot"/}"
 
@@ -1907,7 +1926,7 @@ normalize_public_path() {
 discover_boundary_claims() {
   discover_docroot_paths \
     "$1" \
-    "${GITHUB_SSH_DEPLOY_BOUNDARIES_FILE:-}" \
+    "${WPCLOUD_SITE_GIT_DEPLOY_BOUNDARIES_FILE:-}" \
     "boundary" \
     "$2" \
     -type d \( -uid 0 -or -gid 0 \) -and -perm -1000
@@ -1918,7 +1937,7 @@ discover_protected_anchors() {
   local output_file="$2"
   discover_docroot_paths \
     "$docroot" \
-    "${GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE:-}" \
+    "${WPCLOUD_SITE_GIT_DEPLOY_PROTECTED_ANCHORS_FILE:-}" \
     "protected anchors" \
     "$output_file" \
     \( -uid 0 -or -gid 0 \) -and -not -writable
@@ -2081,9 +2100,12 @@ compute_claims() {
     fi
 
     case "$public_path" in
-      .git|.git/*|.github-ssh-deploy|.github-ssh-deploy/*)
+      .git|.git/*)
+        continue
+        ;;
+      "$DOCROOT_NAMESPACE"|"$DOCROOT_NAMESPACE"/*)
         # Never claim the deployment namespace itself. If caller-controlled
-        # excludes allow .github-ssh-deploy into a release, claiming it would
+        # excludes allow the deployment namespace into a release, claiming it would
         # swap releases, lock, and helper for a symlink into that same release.
         continue
         ;;
@@ -2166,12 +2188,18 @@ rollback_release() {
   local rollback_to="$3"
   local exchange_helper="$4"
 
-  local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
-  local releases_dir="$base/releases"
-  local release_dir="$releases_dir/$rollback_to"
-  local lock_file="$base/deploy.lock"
-  local exchanged_paths_file="$base/exchanged_paths"
+  local base
+  local releases_dir
+  local release_dir
+  local lock_file
+  local exchanged_paths_file
   local scratch_dir
+
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  releases_dir="$base/releases"
+  release_dir="$releases_dir/$rollback_to"
+  lock_file="$base/deploy.lock"
+  exchanged_paths_file="$base/exchanged_paths"
 
   mkdir -p "$releases_dir"
 
@@ -2281,7 +2309,7 @@ cmd_remote_deploy() {
 
   engine_require_id "deployment-id" "$deployment_id"
   if [[ -z "$exchange_helper" ]]; then
-    exchange_helper="$docroot/.github-ssh-deploy/deployments/$deployment_id/exchange-rename"
+    exchange_helper="$(docroot_deployment_base "$docroot" "$deployment_id")/exchange-rename"
   fi
 
   trap cleanup_run_scratch EXIT
@@ -2306,16 +2334,24 @@ cmd_remote_deploy() {
     engine_die "keep-releases must be a positive integer"
   fi
 
-  local base="$docroot/.github-ssh-deploy/deployments/$deployment_id"
-  local incoming_dir="$base/incoming"
-  local releases_dir="$base/releases"
-  local incoming_release="$incoming_dir/$release_id"
-  local release_dir="$releases_dir/$release_id"
-  local lock_file="$base/deploy.lock"
-  local exchanged_paths_file="$base/exchanged_paths"
+  local base
+  local incoming_dir
+  local releases_dir
+  local incoming_release
+  local release_dir
+  local lock_file
+  local exchanged_paths_file
   local scratch_dir
   local boundaries_file
   local new_claims_file
+
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  incoming_dir="$base/incoming"
+  releases_dir="$base/releases"
+  incoming_release="$incoming_dir/$release_id"
+  release_dir="$releases_dir/$release_id"
+  lock_file="$base/deploy.lock"
+  exchanged_paths_file="$base/exchanged_paths"
 
   mkdir -p "$incoming_dir" "$releases_dir"
 

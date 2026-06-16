@@ -151,7 +151,7 @@ grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy 
 [[ -L "$docroot/app-link.txt" ]] || fail "repo symlink should be deployed through public claim"
 [[ -L "$docroot/index.html" ]] || fail "published index should be a symlink"
 index_target="$(readlink "$docroot/index.html")"
-[[ "$index_target" == .github-ssh-deploy/deployments/site/current/index.html ]] || fail "unexpected public symlink target: $index_target"
+[[ "$index_target" == .wpcloud-site-git-deploy/deployments/site/current/index.html ]] || fail "unexpected public symlink target: $index_target"
 printf '%s\n' "$index_target" >"$tmpdir/index-target.txt"
 assert_not_contains "$home_dir" "$tmpdir/index-target.txt"
 
@@ -167,8 +167,8 @@ if HOME="$conflict_home_dir" "$cli" deploy conflict --tag v1 >"$tmpdir/conflict-
 fi
 assert_contains "claim owned by another deployment:" "$tmpdir/conflict-deploy.txt"
 [[ ! -d "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict" ]] || fail "failed promotion should remove temp worktree"
-if [[ -d "$docroot/.github-ssh-deploy/deployments/conflict/incoming" ]]; then
-  conflict_incoming_count="$(find "$docroot/.github-ssh-deploy/deployments/conflict/incoming" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+if [[ -d "$docroot/.wpcloud-site-git-deploy/deployments/conflict/incoming" ]]; then
+  conflict_incoming_count="$(find "$docroot/.wpcloud-site-git-deploy/deployments/conflict/incoming" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   [[ "$conflict_incoming_count" == "0" ]] || fail "failed promotion should remove incoming release"
 fi
 conflict_repo_cache="$conflict_home_dir/.wpcloud-site-git-deploy/repos/conflict"
@@ -179,15 +179,15 @@ fi
 second_deploy="$(HOME="$home_dir" "$cli" deploy site --branch feature)"
 second_release="${second_deploy%% *}"
 grep -Fx 'hello from feature' "$docroot/index.html" >/dev/null || fail "branch deploy did not publish feature content"
-first_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/assets/app.txt"
-second_asset="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/assets/app.txt"
+first_asset="$docroot/.wpcloud-site-git-deploy/deployments/site/releases/$first_release/assets/app.txt"
+second_asset="$docroot/.wpcloud-site-git-deploy/deployments/site/releases/$second_release/assets/app.txt"
 if supports_rsync_link_dest "$docroot"; then
   [[ "$(inode_of "$first_asset")" == "$(inode_of "$second_asset")" ]] || fail "unchanged asset should be hardlinked across releases"
 else
   echo "rsync --link-dest hardlink reuse not supported in test docroot; skipping hardlink inode assertion" >&2
 fi
-first_index="$docroot/.github-ssh-deploy/deployments/site/releases/$first_release/index.html"
-second_index="$docroot/.github-ssh-deploy/deployments/site/releases/$second_release/index.html"
+first_index="$docroot/.wpcloud-site-git-deploy/deployments/site/releases/$first_release/index.html"
+second_index="$docroot/.wpcloud-site-git-deploy/deployments/site/releases/$second_release/index.html"
 [[ "$(inode_of "$first_index")" != "$(inode_of "$second_index")" ]] || fail "changed file should not be hardlinked across releases"
 
 HOME="$home_dir" "$cli" deploy site --commit "$main_commit" >/dev/null
@@ -254,16 +254,16 @@ assert_contains "submodule update --init --recursive|ssh -i $home_dir/.wpcloud-s
 late_deploy="$(HOME="$home_dir" "$cli" update site)"
 late_release="${late_deploy%% *}"
 grep -Fx 'hello from late main' "$docroot/index.html" >/dev/null || fail "update should deploy late main content before no-op"
-noop_before_count="$(find "$docroot/.github-ssh-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+noop_before_count="$(find "$docroot/.wpcloud-site-git-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 noop_output="$(HOME="$home_dir" "$cli" update site)"
-noop_after_count="$(find "$docroot/.github-ssh-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+noop_after_count="$(find "$docroot/.wpcloud-site-git-deploy/deployments/site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 [[ "$noop_before_count" == "$noop_after_count" ]] || fail "no-op update should not create a new release"
 case "$noop_output" in
   "no-op $late_release branch $late_commit") ;;
   *) fail "unexpected no-op output: $noop_output" ;;
 esac
 
-metadata_file="$docroot/.github-ssh-deploy/deployments/site/metadata/$late_release.env"
+metadata_file="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$late_release.env"
 tamper_marker="$tmpdir/metadata-executed"
 {
   printf 'commit=%q\n' "$late_commit"
@@ -322,9 +322,9 @@ assert_contains "deploy-root must be a safe relative path" "$tmpdir/bad-root.txt
 HOME="$root_home_dir" "$cli" config root-site --clear-deploy-root >/dev/null
 HOME="$root_home_dir" "$cli" status root-site >"$tmpdir/root-status-cleared.txt"
 assert_contains "deploy_root=" "$tmpdir/root-status-cleared.txt"
-root_count_before_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+root_count_before_clear_deploy="$(find "$root_docroot/.wpcloud-site-git-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 HOME="$root_home_dir" "$cli" update root-site >/dev/null
-root_count_after_clear_deploy="$(find "$root_docroot/.github-ssh-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+root_count_after_clear_deploy="$(find "$root_docroot/.wpcloud-site-git-deploy/deployments/root-site/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 [[ "$root_count_after_clear_deploy" -gt "$root_count_before_clear_deploy" ]] || fail "changing deploy root should deploy the same commit again"
 grep -Fx 'root only' "$root_docroot/README.md" >/dev/null || fail "clearing deploy-root should publish repo root files"
 

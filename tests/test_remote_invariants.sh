@@ -14,7 +14,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 fake_bin="$tmpdir/bin"
 docroot="$tmpdir/docroot"
 home_like="$tmpdir/home/user"
-base="$docroot/.github-ssh-deploy/deployments/site"
+base="$docroot/.wpcloud-site-git-deploy/deployments/site"
 incoming="$base/incoming/release-one"
 find_log="$tmpdir/find.log"
 empty_boundaries="$tmpdir/empty-boundaries"
@@ -33,7 +33,7 @@ cat >"$fake_bin/ln" <<'SH'
 set -euo pipefail
 if [[ "${WPCLOUD_SITE_GIT_DEPLOY_CORRUPT_LINK_TARGET:-}" != "" &&
       "${1:-}" == "-s" &&
-      "${3:-}" == *".github-ssh-deploy."* ]]; then
+      "${3:-}" == *".wpcloud-site-git-deploy."* ]]; then
   exec /bin/ln -s "$WPCLOUD_SITE_GIT_DEPLOY_CORRUPT_LINK_TARGET" "$3"
 fi
 exec /bin/ln "$@"
@@ -52,8 +52,8 @@ chmod +x "$fake_bin/find"
 export PATH="$fake_bin:$PATH"
 export WPCLOUD_SITE_GIT_DEPLOY_FIND_LOG="$find_log"
 export WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$docroot"
-export GITHUB_SSH_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
-export GITHUB_SSH_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
+export WPCLOUD_SITE_GIT_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
+export WPCLOUD_SITE_GIT_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
 
 printf 'ok\n' >"$incoming/index.html"
 "${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
@@ -61,7 +61,7 @@ docroot_scans="$(grep -c '^docroot-symlink-scan$' "$find_log" 2>/dev/null || tru
 [[ "$docroot_scans" == "1" ]] || fail "deploy should scan docroot symlinks only for materialized claims, got $docroot_scans scans"
 
 target="$(readlink "$docroot/index.html")"
-[[ "$target" == ".github-ssh-deploy/deployments/site/current/index.html" ]] || fail "public symlink target should be docroot-relative, got: $target"
+[[ "$target" == ".wpcloud-site-git-deploy/deployments/site/current/index.html" ]] || fail "public symlink target should be docroot-relative, got: $target"
 [[ "$target" != /* ]] || fail "public symlink target must not be absolute"
 [[ "$target" != *"$home_like"* ]] || fail "public symlink target must not include HOME"
 
@@ -89,7 +89,7 @@ assert_corrupt_claim_fails() {
   local corrupt_target="$2"
   local expected="$3"
   local corrupt_docroot="$tmpdir/$name-docroot"
-  local corrupt_base="$corrupt_docroot/.github-ssh-deploy/deployments/site"
+  local corrupt_base="$corrupt_docroot/.wpcloud-site-git-deploy/deployments/site"
   local corrupt_incoming="$corrupt_base/incoming/release-one"
 
   mkdir -p "$corrupt_incoming"
@@ -107,3 +107,15 @@ assert_corrupt_claim_fails() {
 assert_corrupt_claim_fails absolute "/outside-target" "public symlink target is absolute: index.html"
 assert_corrupt_claim_fails home "../${home_like#/}/file" "public symlink target contains HOME: index.html"
 assert_corrupt_claim_fails outside "../outside-target" "public symlink resolves outside docroot: index.html"
+
+foreign_docroot="$tmpdir/foreign-docroot"
+foreign_base="$foreign_docroot/.wpcloud-site-git-deploy/deployments/site"
+foreign_incoming="$foreign_base/incoming/release-one"
+mkdir -p "$foreign_incoming"
+printf 'ok\n' >"$foreign_incoming/index.html"
+mkdir -p "$foreign_docroot"
+ln -s ".wpcloud-site-git-deploy/deployments/other/current/index.html" "$foreign_docroot/index.html"
+if "${remote[@]}" --docroot "$foreign_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/foreign-owner.log"; then
+  fail "namespace symlink owned by another deployment should be rejected"
+fi
+grep -Fq -- "claim owned by another deployment: index.html" "$tmpdir/foreign-owner.log" || fail "unexpected foreign-owner rejection"
