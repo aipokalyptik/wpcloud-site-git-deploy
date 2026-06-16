@@ -113,19 +113,7 @@ resolves in the site's cron execution environment:
 COMMAND='bash -lc '\''export PATH="$HOME/.wpcloud-site-git-deploy/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"; wpcloud-site-git-deploy update site >> "$HOME/.wpcloud-site-git-deploy/cron-site.log" 2>&1'\'''
 ```
 
-Run every five minutes. `12h` means twelve times per hour; if your site has
-WP Cloud advanced cron enabled, you can use the full crontab expression
-`*/5 * * * *` instead.
-
-```bash
-curl -sS -X POST \
-  -H "Auth: $WPCLOUD_API_KEY" \
-  --data-urlencode "schedule=12h" \
-  --data-urlencode "command=$COMMAND" \
-  "$WPCLOUD_API_BASE/crontab/$WPCLOUD_SITE/add"
-```
-
-Run every hour:
+Run once per hour:
 
 ```bash
 curl -sS -X POST \
