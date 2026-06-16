@@ -45,8 +45,9 @@ assert_contains "wpcloud-site-git-deploy auth site --import-key" "$repo_root/REA
 
 awk '
   /write_release_metadata\(\)/ { in_func=1 }
-  in_func && /\*\) die "unmapped release metadata key:/ { found=1 }
-  in_func && /^}/ { exit found ? 0 : 1 }
+  in_func && /\*\)/ { default_arm=1 }
+  in_func && /die "unmapped release metadata key:/ { unmapped_die=1 }
+  in_func && /^}/ { exit default_arm && unmapped_die ? 0 : 1 }
 ' "$cli" || fail "write_release_metadata should fail for unmapped release metadata keys"
 
 fake_bin="$tmpdir/bin"

@@ -2,43 +2,53 @@
 set -euo pipefail
 
 readonly VERSION="1.1.2"
+# Default number of promoted docroot releases retained for rollback.
 readonly DEFAULT_KEEP_RELEASES="3"
+# Metadata keys written for each successful release and accepted by the
+# non-executing metadata reader.
 readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
 
+# Location of this checked-out or installed CLI. Source installs use REPO_ROOT
+# to find the bundled helper; managed installs primarily use STATE_DIR instead.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Tool-owned runtime state. Override with WPCLOUD_SITE_GIT_DEPLOY_HOME in tests
+# or nonstandard installs; production defaults to the site SSH user's HOME.
 STATE_DIR="${WPCLOUD_SITE_GIT_DEPLOY_HOME:-$HOME/.wpcloud-site-git-deploy}"
+# Per-deployment config files, repo caches, transient worktrees, installed
+# helper binaries, and deploy keys are intentionally kept outside the docroot.
 DEPLOYMENTS_DIR="$STATE_DIR/deployments"
 REPOS_DIR="$STATE_DIR/repos"
 TMP_DIR="$STATE_DIR/tmp"
 BIN_DIR="$STATE_DIR/bin"
 KEYS_DIR="$STATE_DIR/keys"
+# Fallback helper path when running directly from a source checkout.
 HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 
 # Common CLI helpers
 
 usage() {
-  cat <<'USAGE'
-wpcloud-site-git-deploy deploys a Git repository into a WP Cloud or Pressable docroot from the site SSH user.
+  cat <<-'USAGE'
+	wpcloud-site-git-deploy deploys a Git repository into a WP Cloud or Pressable docroot from the site SSH user.
 
-Usage:
-  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
-  wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root]
-  wpcloud-site-git-deploy deploy <name> --branch BRANCH
-  wpcloud-site-git-deploy deploy <name> --tag TAG
-  wpcloud-site-git-deploy deploy <name> --commit SHA
-  wpcloud-site-git-deploy update <name>
-  wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
-  wpcloud-site-git-deploy releases <name>
-  wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]
-  wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
-  wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
-  wpcloud-site-git-deploy status <name>
-  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--use-key PATH | --import-key PATH | --remove [--purge-key]]
-  wpcloud-site-git-deploy doctor <name> [--offline]
-  wpcloud-site-git-deploy --help
-  wpcloud-site-git-deploy --version
-USAGE
+	Usage:
+	  wpcloud-site-git-deploy init <name> --repo URL --docroot /srv/htdocs --deployment-id ID --default-ref main [--keep-releases N] [--deploy-root PATH]
+	  wpcloud-site-git-deploy config <name> [--deploy-root PATH | --clear-deploy-root]
+	  wpcloud-site-git-deploy deploy <name> --branch BRANCH
+	  wpcloud-site-git-deploy deploy <name> --tag TAG
+	  wpcloud-site-git-deploy deploy <name> --commit SHA
+	  wpcloud-site-git-deploy update <name>
+	  wpcloud-site-git-deploy rollback <name> [--to RELEASE_ID]
+	  wpcloud-site-git-deploy releases <name>
+	  wpcloud-site-git-deploy branches <name> [--fetch] [--limit N]
+	  wpcloud-site-git-deploy tags <name> [--fetch] [--limit N]
+	  wpcloud-site-git-deploy commits <name> [--fetch] [--limit N]
+	  wpcloud-site-git-deploy status <name>
+	  wpcloud-site-git-deploy auth <name> [--force-new-key] [--verify] [--use-key PATH | --import-key PATH | --remove [--purge-key]]
+	  wpcloud-site-git-deploy doctor <name> [--offline]
+	  wpcloud-site-git-deploy --help
+	  wpcloud-site-git-deploy --version
+	USAGE
 }
 
 die() {
@@ -124,10 +134,17 @@ require_deploy_root() {
   local component
   local rest
 
+  # Empty would be ambiguous with the default repository root. Callers clear
+  # deploy_root explicitly instead of storing an empty configured path.
   [[ -n "$value" ]] || die "deploy-root must be a safe relative path"
+  # Absolute paths would let deploy-root escape the checked-out repository.
   [[ "$value" != /* ]] || die "deploy-root must be a safe relative path"
+  # Newlines would corrupt shell config and metadata line formats.
   [[ "$value" != *$'\n'* ]] || die "deploy-root must be a safe relative path"
+  # A trailing slash creates an empty final component and makes equivalent
+  # paths serialize differently.
   [[ "$value" != */ ]] || die "deploy-root must be a safe relative path"
+  # Repeated slashes create empty interior components and ambiguous spelling.
   [[ "$value" != *//* ]] || die "deploy-root must be a safe relative path"
 
   rest="$value"
@@ -139,6 +156,8 @@ require_deploy_root() {
       component="$rest"
       rest=""
     fi
+    # Reject empty, current-directory, and parent-directory components so the
+    # deploy source is always a normal subdirectory inside the worktree.
     [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || die "deploy-root must be a safe relative path"
   done
 }
@@ -147,9 +166,22 @@ require_deploy_root() {
 
 git_ssh_command() {
   local key_path="${ssh_key_path:-}"
+  local command
 
   [[ -n "$key_path" ]] || return 1
-  printf 'ssh -i %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new' "$key_path"
+
+  # -i pins Git to the deployment-specific private key from config.
+  command="ssh -i $(shell_quote "$key_path")"
+  # IdentitiesOnly prevents ssh-agent or default keys from changing which
+  # repository identity Git presents.
+  command+=" -o IdentitiesOnly=yes"
+  # BatchMode makes deploy/update fail instead of hanging on password or
+  # passphrase prompts, which keeps unattended cron/API-triggered runs safe.
+  command+=" -o BatchMode=yes"
+  # accept-new preserves first-contact ergonomics while refusing changed host
+  # keys after the first trust-on-first-use connection.
+  command+=" -o StrictHostKeyChecking=accept-new"
+  printf '%s\n' "$command"
 }
 
 git_with_auth() {
@@ -190,20 +222,20 @@ ensure_helper() {
     # Local macOS tests cannot execute the committed Linux renameat2 helper.
     # The generated shim keeps tests focused on deploy semantics; installed
     # Linux/WP Cloud runtimes use the static helper below.
-    cat >"$helper" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-python3 - "$1" "$2" <<'PY'
-import os
-import sys
+    cat >"$helper" <<-'SH'
+	#!/usr/bin/env bash
+	set -euo pipefail
+	python3 - "$1" "$2" <<-'PY'
+	import os
+	import sys
 
-left, right = sys.argv[1], sys.argv[2]
-tmp = f"{left}.exchange.{os.getpid()}"
-os.rename(left, tmp)
-os.rename(right, left)
-os.rename(tmp, right)
-PY
-SH
+	left, right = sys.argv[1], sys.argv[2]
+	tmp = f"{left}.exchange.{os.getpid()}"
+	os.rename(left, tmp)
+	os.rename(right, left)
+	os.rename(tmp, right)
+	PY
+	SH
     chmod 755 "$helper"
     printf '%s\n' "$helper"
     return 0
@@ -222,25 +254,25 @@ default_exclude_file() {
   # deploy dotfiles such as .htaccess and .well-known because those are not in
   # this list; .gitignore is excluded because it is repo bookkeeping, not site
   # content, in this deploy model.
-  cat >"$output" <<'EXCLUDES'
-.git
-.git/
-.gitignore
-.gitattributes
-.gitmodules
-.github/
-.svn/
-.hg/
-.bzr/
-.aws/
-.ssh/
-.env
-.env.*
-.npmrc
-.pypirc
-.netrc
-.DS_Store
-EXCLUDES
+  {
+    printf '%s\n' '.git'
+    printf '%s\n' '.git/'
+    printf '%s\n' '.gitignore'
+    printf '%s\n' '.gitattributes'
+    printf '%s\n' '.gitmodules'
+    printf '%s\n' '.github/'
+    printf '%s\n' '.svn/'
+    printf '%s\n' '.hg/'
+    printf '%s\n' '.bzr/'
+    printf '%s\n' '.aws/'
+    printf '%s\n' '.ssh/'
+    printf '%s\n' '.env'
+    printf '%s\n' '.env.*'
+    printf '%s\n' '.npmrc'
+    printf '%s\n' '.pypirc'
+    printf '%s\n' '.netrc'
+    printf '%s\n' '.DS_Store'
+  } >"$output"
 }
 
 # Release metadata and deploy orchestration
@@ -279,10 +311,18 @@ resolve_ref() {
 
   repo_dir="$(repo_dir_for "$name")"
   case "$mode" in
-    branch) git -C "$repo_dir" rev-parse "refs/remotes/origin/$value^{commit}" ;;
-    tag) git -C "$repo_dir" rev-parse "refs/tags/$value^{commit}" ;;
-    commit) git -C "$repo_dir" rev-parse "$value^{commit}" ;;
-    *) die "unknown ref mode: $mode" ;;
+    branch)
+      git -C "$repo_dir" rev-parse "refs/remotes/origin/$value^{commit}"
+      ;;
+    tag)
+      git -C "$repo_dir" rev-parse "refs/tags/$value^{commit}"
+      ;;
+    commit)
+      git -C "$repo_dir" rev-parse "$value^{commit}"
+      ;;
+    *)
+      die "unknown ref mode: $mode"
+      ;;
   esac
 }
 
@@ -296,6 +336,8 @@ prepare_git_features() {
   local lfs_paths_list="$TMP_DIR/git-lfs-paths.$$.list"
   local lfs_pointer_paths="$TMP_DIR/git-lfs-pointers.$$.list"
 
+  # Hydrate repository features that Git checkouts may leave incomplete for a
+  # deployable filesystem: submodules first, then Git LFS objects.
   if [[ -f "$worktree/.gitmodules" ]]; then
     git_with_auth -C "$worktree" submodule update --init --recursive >&2
     if git -C "$worktree" submodule status --recursive | grep -Eq '^-'; then
@@ -339,6 +381,11 @@ make_release_id() {
   local commit="$1"
   local random_hex
 
+  # A release id names a deployment instance, not just Git content. The same
+  # commit can be deployed more than once after rollback, config/deploy-root
+  # changes, or a failed partial run, so a pure commit SHA would collide with
+  # existing release and metadata paths. Keep the commit prefix for humans and
+  # add a small random suffix for same-second redeploy uniqueness.
   random_hex="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
   date -u "+%Y%m%d%H%M%S-${commit:0:12}-$random_hex"
 }
@@ -397,6 +444,9 @@ copy_worktree_to_incoming() {
   local link_dest=""
   local rsync_args=()
 
+  # Stage the exact filesystem that will become the next release. deploy_root
+  # makes a repository subdirectory behave as the docroot root, while link_dest
+  # deduplicates unchanged files against the active release.
   if [[ -n "${deploy_root:-}" ]]; then
     deploy_source="$worktree/$deploy_root"
   fi
@@ -436,13 +486,27 @@ write_release_metadata() {
   {
     for key in "${RELEASE_METADATA_KEYS[@]}"; do
       case "$key" in
-        release_id) value="$release_id" ;;
-        ref_mode) value="$mode" ;;
-        ref_value) value="$ref_value" ;;
-        commit) value="$commit" ;;
-        deploy_root) value="${deploy_root:-}" ;;
-        deployed_at) value="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" ;;
-        *) die "unmapped release metadata key: $key" ;;
+        release_id)
+          value="$release_id"
+          ;;
+        ref_mode)
+          value="$mode"
+          ;;
+        ref_value)
+          value="$ref_value"
+          ;;
+        commit)
+          value="$commit"
+          ;;
+        deploy_root)
+          value="${deploy_root:-}"
+          ;;
+        deployed_at)
+          value="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          ;;
+        *)
+          die "unmapped release metadata key: $key"
+          ;;
       esac
       write_config_value "$key" "$value"
     done
@@ -563,6 +627,9 @@ deploy_ref() {
   local worktree
   local helper
 
+  # High-level deploy pipeline: refresh cache, resolve the requested ref,
+  # create a unique release instance, stage it into incoming, promote through
+  # the internal engine, then persist metadata for inspection and no-op checks.
   load_config "$name"
   ensure_state_dirs
   helper="$(ensure_helper)"
@@ -762,16 +829,38 @@ cmd_auth() {
   local host
   local public_key
 
+  # Configure exactly one deploy key source for this deployment: generated
+  # managed key, external key path, imported managed copy, or removal.
   require_name "$name"
   while (($#)); do
     case "$1" in
-      --force-new-key) force_new_key=1; shift ;;
-      --verify) verify=1; shift ;;
-      --remove) remove=1; shift ;;
-      --purge-key) purge_key=1; shift ;;
-      --use-key) use_key="${2:-}"; shift 2 ;;
-      --import-key) import_key="${2:-}"; shift 2 ;;
-      *) die "unknown auth argument: $1" ;;
+      --force-new-key)
+        force_new_key=1
+        shift
+        ;;
+      --verify)
+        verify=1
+        shift
+        ;;
+      --remove)
+        remove=1
+        shift
+        ;;
+      --purge-key)
+        purge_key=1
+        shift
+        ;;
+      --use-key)
+        use_key="${2:-}"
+        shift 2
+        ;;
+      --import-key)
+        import_key="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown auth argument: $1"
+        ;;
     esac
   done
 
@@ -896,11 +985,18 @@ cmd_doctor() {
   local repo_dir
   local helper
 
+  # Report every setup problem found instead of failing on the first one so a
+  # first-time user gets a complete repair checklist.
   require_name "$name"
   while (($#)); do
     case "$1" in
-      --offline) offline=1; shift ;;
-      *) die "unknown doctor argument: $1" ;;
+      --offline)
+        offline=1
+        shift
+        ;;
+      *)
+        die "unknown doctor argument: $1"
+        ;;
     esac
   done
 
@@ -1001,9 +1097,17 @@ cmd_config() {
   require_name "$name"
   while (($#)); do
     case "$1" in
-      --deploy-root) set_deploy_root="${2:-}"; shift 2 ;;
-      --clear-deploy-root) clear_deploy_root=1; shift ;;
-      *) die "unknown config argument: $1" ;;
+      --deploy-root)
+        set_deploy_root="${2:-}"
+        shift 2
+        ;;
+      --clear-deploy-root)
+        clear_deploy_root=1
+        shift
+        ;;
+      *)
+        die "unknown config argument: $1"
+        ;;
     esac
   done
 
@@ -1038,13 +1142,33 @@ cmd_init() {
   require_name "$name"
   while (($#)); do
     case "$1" in
-      --repo) repo="${2:-}"; shift 2 ;;
-      --docroot) init_docroot="${2:-}"; shift 2 ;;
-      --deployment-id) init_deployment_id="${2:-}"; shift 2 ;;
-      --default-ref) init_default_ref="${2:-}"; shift 2 ;;
-      --keep-releases) init_keep_releases="${2:-}"; shift 2 ;;
-      --deploy-root) init_deploy_root="${2:-}"; shift 2 ;;
-      *) die "unknown init argument: $1" ;;
+      --repo)
+        repo="${2:-}"
+        shift 2
+        ;;
+      --docroot)
+        init_docroot="${2:-}"
+        shift 2
+        ;;
+      --deployment-id)
+        init_deployment_id="${2:-}"
+        shift 2
+        ;;
+      --default-ref)
+        init_default_ref="${2:-}"
+        shift 2
+        ;;
+      --keep-releases)
+        init_keep_releases="${2:-}"
+        shift 2
+        ;;
+      --deploy-root)
+        init_deploy_root="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown init argument: $1"
+        ;;
     esac
   done
 
@@ -1080,10 +1204,27 @@ cmd_deploy() {
   require_name "$name"
   while (($#)); do
     case "$1" in
-      --branch) [[ -z "$mode" ]] || die "choose only one ref"; mode="branch"; value="${2:-}"; shift 2 ;;
-      --tag) [[ -z "$mode" ]] || die "choose only one ref"; mode="tag"; value="${2:-}"; shift 2 ;;
-      --commit) [[ -z "$mode" ]] || die "choose only one ref"; mode="commit"; value="${2:-}"; shift 2 ;;
-      *) die "unknown deploy argument: $1" ;;
+      --branch)
+        [[ -z "$mode" ]] || die "choose only one ref"
+        mode="branch"
+        value="${2:-}"
+        shift 2
+        ;;
+      --tag)
+        [[ -z "$mode" ]] || die "choose only one ref"
+        mode="tag"
+        value="${2:-}"
+        shift 2
+        ;;
+      --commit)
+        [[ -z "$mode" ]] || die "choose only one ref"
+        mode="commit"
+        value="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown deploy argument: $1"
+        ;;
     esac
   done
 
@@ -1106,8 +1247,13 @@ cmd_rollback() {
 
   while (($#)); do
     case "$1" in
-      --to) to="${2:-}"; shift 2 ;;
-      *) die "unknown rollback argument: $1" ;;
+      --to)
+        to="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown rollback argument: $1"
+        ;;
     esac
   done
 
@@ -1162,9 +1308,17 @@ cmd_branches() {
   local fetch=0
   while (($#)); do
     case "$1" in
-      --fetch) fetch=1; shift ;;
-      --limit) limit="${2:-}"; shift 2 ;;
-      *) die "unknown branches argument: $1" ;;
+      --fetch)
+        fetch=1
+        shift
+        ;;
+      --limit)
+        limit="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown branches argument: $1"
+        ;;
     esac
   done
   load_config "$name"
@@ -1186,9 +1340,17 @@ cmd_tags() {
   local fetch=0
   while (($#)); do
     case "$1" in
-      --fetch) fetch=1; shift ;;
-      --limit) limit="${2:-}"; shift 2 ;;
-      *) die "unknown tags argument: $1" ;;
+      --fetch)
+        fetch=1
+        shift
+        ;;
+      --limit)
+        limit="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown tags argument: $1"
+        ;;
     esac
   done
   load_config "$name"
@@ -1208,9 +1370,17 @@ cmd_commits() {
   local fetch=0
   while (($#)); do
     case "$1" in
-      --fetch) fetch=1; shift ;;
-      --limit) limit="${2:-}"; shift 2 ;;
-      *) die "unknown commits argument: $1" ;;
+      --fetch)
+        fetch=1
+        shift
+        ;;
+      --limit)
+        limit="${2:-}"
+        shift 2
+        ;;
+      *)
+        die "unknown commits argument: $1"
+        ;;
     esac
   done
   load_config "$name"
@@ -1238,32 +1408,32 @@ cmd_status() {
 # Internal promotion engine
 
 engine_usage() {
-  cat <<'USAGE'
-Usage: wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --release-id ID --keep-releases N [--exchange-helper PATH] [--post-deploy-file PATH] [--print-claims]
-       wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --rollback-to RELEASE_ID [--exchange-helper PATH]
-       wpcloud-site-git-deploy __remote-deploy --docroot PATH --assert-public-symlinks
+  cat <<-'USAGE'
+	Usage: wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --release-id ID --keep-releases N [--exchange-helper PATH] [--post-deploy-file PATH] [--print-claims]
+	       wpcloud-site-git-deploy __remote-deploy --docroot PATH --deployment-id ID --rollback-to RELEASE_ID [--exchange-helper PATH]
+	       wpcloud-site-git-deploy __remote-deploy --docroot PATH --assert-public-symlinks
 
-Promote an uploaded incoming release into the deployment namespace and update current.
+	Promote an uploaded incoming release into the deployment namespace and update current.
 
-Options:
-  --post-deploy-file PATH
-                  Run this bash command file from the docroot after current is
-                  updated and stale symlinks are cleaned up. Failure exits
-                  nonzero without rolling back the active release.
-  --print-claims  Print compressed claims for the incoming release and exit without
-                  promoting the release or changing current.
-  --rollback-to RELEASE_ID
-                  Re-point current to an existing release and reconcile managed
-                  public symlinks. Post-deploy commands are not run.
-  --exchange-helper PATH
-                  Helper binary that atomically swaps two paths with
-                  renameat2(RENAME_EXCHANGE). Defaults to the uploaded helper in
-                  the deployment namespace.
-  --assert-public-symlinks
-                  Validate that public symlink targets are relative and resolve
-                  under the docroot. This is an invariant check for the SSH CLI,
-                  where $HOME is not mounted during HTTP requests.
-USAGE
+	Options:
+	  --post-deploy-file PATH
+	                  Run this bash command file from the docroot after current is
+	                  updated and stale symlinks are cleaned up. Failure exits
+	                  nonzero without rolling back the active release.
+	  --print-claims  Print compressed claims for the incoming release and exit without
+	                  promoting the release or changing current.
+	  --rollback-to RELEASE_ID
+	                  Re-point current to an existing release and reconcile managed
+	                  public symlinks. Post-deploy commands are not run.
+	  --exchange-helper PATH
+	                  Helper binary that atomically swaps two paths with
+	                  renameat2(RENAME_EXCHANGE). Defaults to the uploaded helper in
+	                  the deployment namespace.
+	  --assert-public-symlinks
+	                  Validate that public symlink targets are relative and resolve
+	                  under the docroot. This is an invariant check for the SSH CLI,
+	                  where $HOME is not mounted during HTTP requests.
+	USAGE
 }
 
 engine_die() {
@@ -1363,8 +1533,11 @@ assert_public_symlinks_under_docroot() {
     resolved="$resolved_dir/$target_base"
 
     case "$resolved" in
-      "$docroot_real"/*) ;;
-      *) engine_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}" ;;
+      "$docroot_real"/*)
+        ;;
+      *)
+        engine_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
+        ;;
     esac
   done
 }
@@ -1378,12 +1551,12 @@ resolve_path() {
   fi
 
   [[ "${WPCLOUD_SITE_GIT_DEPLOY_SKIP_GNU_FIND_CHECK:-}" == "1" ]] || engine_die "readlink -f is required"
-  python3 - "$path" <<'PY'
-import os
-import sys
+  python3 - "$path" <<-'PY'
+	import os
+	import sys
 
-print(os.path.realpath(sys.argv[1]))
-PY
+	print(os.path.realpath(sys.argv[1]))
+	PY
 }
 
 assert_claim_symlinks_under_docroot() {
@@ -1412,8 +1585,11 @@ assert_claim_symlinks_under_docroot() {
 
     resolved="$(resolve_path "$public_path")" || engine_die "public symlink resolves outside docroot: $claim"
     case "$resolved" in
-      "$docroot_real"/*) ;;
-      *) engine_die "public symlink resolves outside docroot: $claim" ;;
+      "$docroot_real"/*)
+        ;;
+      *)
+        engine_die "public symlink resolves outside docroot: $claim"
+        ;;
     esac
   done <"$claims_file"
 }
@@ -2080,6 +2256,9 @@ cmd_remote_deploy() {
   local print_claims=0
   local assert_public_symlinks=0
 
+  # Hidden internal/diagnostic command. The public deploy path calls this in a
+  # subshell after rsyncing incoming content so engine exits cannot bypass the
+  # outer cleanup paths.
   while (($#)); do
     case "$1" in
       --help|-h)
@@ -2235,22 +2414,54 @@ main() {
   shift || true
 
   case "$command" in
-    init) cmd_init "$@" ;;
-    config) cmd_config "$@" ;;
-    deploy) cmd_deploy "$@" ;;
-    update) cmd_update "$@" ;;
-    rollback) cmd_rollback "$@" ;;
-    releases) cmd_releases "$@" ;;
-    branches) cmd_branches "$@" ;;
-    tags) cmd_tags "$@" ;;
-    commits) cmd_commits "$@" ;;
-    status) cmd_status "$@" ;;
-    auth) cmd_auth "$@" ;;
-    doctor) cmd_doctor "$@" ;;
-    __remote-deploy) cmd_remote_deploy "$@" ;;
-    --help|-h|"") usage ;;
-    --version) echo "$VERSION" ;;
-    *) die "unknown command: $command" ;;
+    init)
+      cmd_init "$@"
+      ;;
+    config)
+      cmd_config "$@"
+      ;;
+    deploy)
+      cmd_deploy "$@"
+      ;;
+    update)
+      cmd_update "$@"
+      ;;
+    rollback)
+      cmd_rollback "$@"
+      ;;
+    releases)
+      cmd_releases "$@"
+      ;;
+    branches)
+      cmd_branches "$@"
+      ;;
+    tags)
+      cmd_tags "$@"
+      ;;
+    commits)
+      cmd_commits "$@"
+      ;;
+    status)
+      cmd_status "$@"
+      ;;
+    auth)
+      cmd_auth "$@"
+      ;;
+    doctor)
+      cmd_doctor "$@"
+      ;;
+    __remote-deploy)
+      cmd_remote_deploy "$@"
+      ;;
+    --help|-h|"")
+      usage
+      ;;
+    --version)
+      echo "$VERSION"
+      ;;
+    *)
+      die "unknown command: $command"
+      ;;
   esac
 }
 
