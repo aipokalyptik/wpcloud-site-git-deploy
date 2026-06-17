@@ -371,7 +371,7 @@ For stable release use, install from the moving major tag:
 git clone --branch v1 --depth 1 https://github.com/aipokalyptik/wpcloud-site-git-deploy.git /tmp/wpcloud-site-git-deploy
 ```
 
-For an immutable release, replace `v1` with a specific tag such as `v1.1.3`.
+For an immutable release, replace `v1` with a specific tag such as `v1.1.4`.
 
 ## Multiple Repositories Into One WordPress Site
 
