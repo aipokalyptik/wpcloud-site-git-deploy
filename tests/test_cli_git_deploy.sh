@@ -77,6 +77,12 @@ assert_contains "wpcloud-site-git-deploy config site --post-deploy" "$repo_root/
 assert_contains "wpcloud-site-git-deploy config site --maintenance-file none" "$repo_root/README.md"
 
 assert_not_contains "metadata_unquote()" "$cli"
+assert_not_contains "ARGS_CONSUMED" "$cli"
+assert_not_contains "args_allow_flags" "$cli"
+assert_not_contains "args_allow_values" "$cli"
+assert_contains "arg_has --offline" "$cli"
+assert_contains "arg_set repo --repo" "$cli"
+assert_contains "arg_get()" "$cli"
 awk '
   /^cmd_[A-Za-z0-9_]+\(\) \{/ {
     in_cmd=1
