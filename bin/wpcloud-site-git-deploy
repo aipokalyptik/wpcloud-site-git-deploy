@@ -539,9 +539,33 @@ git_lfs_with_auth() {
   fi
 }
 
+mv_exchange_available() {
+  local probe_dir
+  local left
+  local right
+  local result=1
+
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-mv-exchange.XXXXXX")" || return 1
+  left="$probe_dir/left"
+  right="$probe_dir/right"
+  printf 'left\n' >"$left"
+  printf 'right\n' >"$right"
+  if mv --exchange -- "$left" "$right" 2>/dev/null &&
+    [[ "$(cat "$left")" == "right" ]] &&
+    [[ "$(cat "$right")" == "left" ]]; then
+    result=0
+  fi
+  rm -rf -- "$probe_dir"
+  return "$result"
+}
+
 ensure_helper() {
   local helper="$BIN_DIR/exchange-rename"
   local path_helper
+
+  if mv_exchange_available; then
+    return 0
+  fi
 
   if [[ -x "$helper" ]]; then
     printf '%s\n' "$helper"
@@ -879,9 +903,11 @@ promote_release() {
     --deployment-id "$deployment_id" \
     --release-id "$release_id" \
     --keep-releases "$keep_releases" \
-    --maintenance-file "$maintenance_file_value" \
-    --exchange-helper "$helper"
+    --maintenance-file "$maintenance_file_value"
   )
+  if [[ -n "$helper" ]]; then
+    engine_args+=(--exchange-helper "$helper")
+  fi
   if [[ -n "$post_deploy_file" ]]; then
     engine_args+=(--post-deploy-file "$post_deploy_file")
   fi
@@ -1263,10 +1289,12 @@ cmd_doctor() {
     doctor_failures=$((doctor_failures + 1))
   fi
 
-  if helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
+  if mv_exchange_available; then
+    printf 'OK exchange: mv --exchange available\n'
+  elif helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
     printf 'OK helper: exchange-rename available: %s\n' "$helper"
   else
-    printf 'FAIL helper: exchange-rename helper is not available\n'
+    printf 'FAIL exchange: mv --exchange and exchange-rename helper are unavailable\n'
     doctor_failures=$((doctor_failures + 1))
   fi
 
@@ -1469,6 +1497,7 @@ cmd_rollback() {
   local to=""
   local helper
   local current
+  local engine_args
 
   args_begin_with_die die rollback "$@"
   arg_set to --to
@@ -1481,7 +1510,11 @@ cmd_rollback() {
     to="$(select_rollback_release "$current")"
   fi
   [[ -n "$to" ]] || die "no rollback release available"
-  run_engine_subshell --docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --maintenance-file "$maintenance_file" --exchange-helper "$helper"
+  engine_args=(--docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --maintenance-file "$maintenance_file")
+  if [[ -n "$helper" ]]; then
+    engine_args+=(--exchange-helper "$helper")
+  fi
+  run_engine_subshell "${engine_args[@]}"
   printf 'rolled back to %s\n' "$to"
 }
 
@@ -1988,13 +2021,20 @@ reconcile_new_claims() {
       continue
     fi
 
-    [[ -x "$exchange_helper" ]] || engine_die "exchange helper is required to reclaim existing path: $claim"
     # Existing public paths may contain real files/directories. Swap in the
     # deploy symlink atomically, then defer deletion of the exchanged-away path
     # until current points at the new release.
-    if ! "$exchange_helper" "$tmp_link" "$public_path"; then
-      rm -f -- "$tmp_link"
-      engine_die "exchange helper failed to reclaim path: $claim"
+    if mv_exchange_available; then
+      if ! mv --exchange -- "$tmp_link" "$public_path"; then
+        rm -f -- "$tmp_link"
+        engine_die "mv --exchange failed to reclaim path: $claim"
+      fi
+    else
+      [[ -x "$exchange_helper" ]] || engine_die "exchange helper is required to reclaim existing path: $claim"
+      if ! "$exchange_helper" "$tmp_link" "$public_path"; then
+        rm -f -- "$tmp_link"
+        engine_die "exchange helper failed to reclaim path: $claim"
+      fi
     fi
     printf '%s\n' "$tmp_link" >>"$exchanged_paths_file"
   done <"$claims_file"
@@ -2620,7 +2660,7 @@ cmd_remote_deploy() {
   fi
 
   engine_require_id "deployment-id" "$deployment_id"
-  if [[ -z "$exchange_helper" ]]; then
+  if [[ -z "$exchange_helper" ]] && ! mv_exchange_available; then
     exchange_helper="$(docroot_deployment_base "$docroot" "$deployment_id")/exchange-rename"
   fi
 

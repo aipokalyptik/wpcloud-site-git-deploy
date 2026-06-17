@@ -74,6 +74,22 @@ cat >"$fake_bin/rsync" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
+cat >"$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--exchange" ]]; then
+  shift
+  [[ "${1:-}" == "--" ]] && shift
+  left="$1"
+  right="$2"
+  tmp="${left}.exchange-test.$$"
+  /bin/mv -- "$left" "$tmp"
+  /bin/mv -- "$right" "$left"
+  /bin/mv -- "$tmp" "$right"
+  exit 0
+fi
+exec /bin/mv "$@"
+SH
 cat >"$fake_bin/flock" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -95,7 +111,7 @@ HOME="$home_dir" "$cli" init site \
   --docroot "$docroot" \
   --deployment-id site \
   --default-ref main >/dev/null
-[[ ! -e "$home_dir/.wpcloud-site-git-deploy/bin/exchange-rename" ]] || fail "init should use exchange-rename from PATH when available"
+[[ ! -e "$home_dir/.wpcloud-site-git-deploy/bin/exchange-rename" ]] || fail "init should not install exchange-rename when mv --exchange is available"
 
 HOME="$home_dir" "$cli" auth site >"$tmpdir/auth-github.txt"
 key_path="$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
@@ -122,7 +138,7 @@ mtime_forced="$(stat -c '%Y' "$key_path")"
 
 HOME="$home_dir" "$cli" doctor site >"$tmpdir/doctor-ok.txt"
 assert_contains "OK config: deployment loaded" "$tmpdir/doctor-ok.txt"
-assert_contains "OK helper: exchange-rename available: $fake_bin/exchange-rename" "$tmpdir/doctor-ok.txt"
+assert_contains "OK exchange: mv --exchange available" "$tmpdir/doctor-ok.txt"
 assert_contains "OK ssh-key: private key is readable" "$tmpdir/doctor-ok.txt"
 assert_contains "OK git-remote: remote access succeeded" "$tmpdir/doctor-ok.txt"
 assert_contains "GIT_SSH_COMMAND=ssh -i $key_path -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$tmpdir/git.log"

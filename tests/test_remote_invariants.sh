@@ -17,6 +17,7 @@ home_like="$tmpdir/home/user"
 base="$docroot/.wpcloud-site-git-deploy/deployments/site"
 incoming="$base/incoming/release-one"
 find_log="$tmpdir/find.log"
+mv_log="$tmpdir/mv.log"
 empty_boundaries="$tmpdir/empty-boundaries"
 empty_protected="$tmpdir/empty-protected"
 mkdir -p "$fake_bin" "$incoming" "$home_like"
@@ -46,11 +47,30 @@ if [[ "${1:-}" == "${WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT:-}" && "${2:-}" == "-p
 fi
 exec /usr/bin/find "$@"
 SH
+cat >"$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--exchange" ]]; then
+  printf 'mv --exchange %s %s\n' "${3:-${2:-}}" "${4:-${3:-}}" >>"${WPCLOUD_SITE_GIT_DEPLOY_MV_LOG:?}"
+  shift
+  [[ "${1:-}" == "--" ]] && shift
+  left="$1"
+  right="$2"
+  tmp="${left}.exchange-test.$$"
+  /bin/mv -- "$left" "$tmp"
+  /bin/mv -- "$right" "$left"
+  /bin/mv -- "$tmp" "$right"
+  exit 0
+fi
+exec /bin/mv "$@"
+SH
 chmod +x "$fake_bin/flock"
 chmod +x "$fake_bin/ln"
 chmod +x "$fake_bin/find"
+chmod +x "$fake_bin/mv"
 export PATH="$fake_bin:$PATH"
 export WPCLOUD_SITE_GIT_DEPLOY_FIND_LOG="$find_log"
+export WPCLOUD_SITE_GIT_DEPLOY_MV_LOG="$mv_log"
 export WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$docroot"
 export WPCLOUD_SITE_GIT_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
 export WPCLOUD_SITE_GIT_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
@@ -64,6 +84,14 @@ target="$(readlink "$docroot/index.html")"
 [[ "$target" == ".wpcloud-site-git-deploy/deployments/site/current/index.html" ]] || fail "public symlink target should be docroot-relative, got: $target"
 [[ "$target" != /* ]] || fail "public symlink target must not be absolute"
 [[ "$target" != *"$home_like"* ]] || fail "public symlink target must not include HOME"
+
+incoming_two="$base/incoming/release-two"
+mkdir -p "$incoming_two"
+printf 'updated\n' >"$incoming_two/index.html"
+"${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-two --keep-releases 2 --exchange-helper "$tmpdir/missing-exchange-helper" >/dev/null
+grep -q '^mv --exchange ' "$mv_log" || fail "existing public path reclaim should use mv --exchange before exchange helper"
+target="$(readlink "$docroot/index.html")"
+[[ "$target" == ".wpcloud-site-git-deploy/deployments/site/current/index.html" ]] || fail "public symlink target should remain docroot-relative after exchange, got: $target"
 
 resolved="$(cd "$(dirname "$docroot/index.html")" && pwd -P)/$target"
 resolved="$(cd "$(dirname "$resolved")" && pwd -P)/$(basename "$resolved")"

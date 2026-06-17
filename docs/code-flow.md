@@ -13,7 +13,7 @@ flowchart TD
   C -->|init| I["cmd_init"]
   I --> I1["Validate name, repo, docroot, deployment-id, default-ref, keep-releases, deploy-root, maintenance_file"]
   I1 --> I2["ensure_state_dirs"]
-  I2 --> I3["ensure_helper: use managed helper, PATH helper, or install exchange-rename if needed"]
+  I2 --> I3["ensure_helper: use mv --exchange when available, otherwise use or install exchange-rename"]
   I3 --> I4["Write deployment config as deployments/<name>/cfg-* value files"]
 
   C -->|config| CFG["cmd_config"]
@@ -74,7 +74,7 @@ flowchart TD
   EACT --> EACT1["cleanup overlapping removed symlinks"]
   EACT1 --> EACT2["reconcile_new_claims"]
   EACT2 --> EACT3["reject foreign deployment ancestor/exact/descendant conflicts"]
-  EACT3 --> EACT4["Create public symlink or atomically exchange existing path with exchange-rename"]
+  EACT3 --> EACT4["Create public symlink or atomically exchange existing path with mv --exchange or exchange-rename"]
   EACT4 --> EACT5["switch_current atomically"]
   EACT5 --> EACT6["cleanup exchanged paths and removed claims"]
   EACT6 --> EACT7["assert_claim_symlinks_under_docroot"]

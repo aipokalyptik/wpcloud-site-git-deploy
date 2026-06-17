@@ -5,8 +5,9 @@
 It keeps Git checkouts, config, and credentials under `$HOME`, but copies every web-visible release into the docroot deployment namespace before promotion. Public symlinks are always relative links into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/current/...`; they never point back into `$HOME`.
 
 The installed runtime is intentionally small: one Bash CLI plus a static Linux
-`exchange-rename` helper for atomic path swaps. The remote promotion engine is
-embedded in the CLI and is not installed as a separate `lib/` file.
+`exchange-rename` fallback helper for atomic path swaps on hosts whose `mv`
+does not support `--exchange`. The remote promotion engine is embedded in the
+CLI and is not installed as a separate `lib/` file.
 
 ## Documentation Map
 
@@ -34,9 +35,10 @@ On the site SSH user:
   `rm`, `mkdir`, `mktemp`, `touch`, `stat`, and `date`
 - Git LFS only when the deployed repository has LFS-tracked paths
 
-The committed helper binary is Linux amd64 and uses
-`renameat2(RENAME_EXCHANGE)`. Production deploys and local tests require
-Linux/GNU tooling; macOS is an editing environment only.
+For reclaiming existing public paths, the CLI checks at runtime for
+`mv --exchange` and uses it when available. The committed helper binary is a
+Linux amd64 fallback using `renameat2(RENAME_EXCHANGE)`. Production deploys
+and local tests require Linux/GNU tooling; macOS is an editing environment only.
 
 ## Install
 
@@ -54,8 +56,9 @@ Installed runtime files:
 - `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
 
 System or chroot installs may place `exchange-rename` anywhere in the site
-user's `PATH`; the CLI uses the managed helper above when present, otherwise
-it falls back to the first executable `exchange-rename` found on `PATH`.
+user's `PATH`. The CLI first uses native `mv --exchange` when available; if
+not, it uses the managed helper above or the first executable
+`exchange-rename` found on `PATH`.
 
 Runtime state created as you initialize and deploy sites:
 
@@ -305,7 +308,8 @@ incoming release, promoted release, metadata file, or pruning pass.
   replace or remove another deployment's active maintenance marker. The second
   deployment proceeds without owning that marker until it can create its own on
   a later run.
-- Existing paths may be reclaimed only through the atomic `exchange-rename` helper on Linux.
+- Existing paths are reclaimed through native `mv --exchange` when available,
+  otherwise through the atomic `exchange-rename` fallback helper on Linux.
 - Deploy-time symlink assertions are scoped to the final claims owned by that
   deployment. The hidden full-docroot audit remains available through
   `wpcloud-site-git-deploy __remote-deploy --assert-public-symlinks` for tests
@@ -335,8 +339,8 @@ tests/run.sh
 
 Run tests on a Linux host, Linux CI, a Linux container/VM, or a throwaway WP
 Cloud/Pressable site. Native macOS test execution is not supported because the
-deploy path depends on GNU tools and the Linux `renameat2(RENAME_EXCHANGE)`
-helper.
+deploy path depends on GNU tools and either native `mv --exchange` or the Linux
+`renameat2(RENAME_EXCHANGE)` fallback helper.
 
 Before committing documentation-only changes, run:
 

@@ -51,7 +51,8 @@ git diff --check
 uses Ubuntu, installs `shellcheck`, and runs `tests/run.sh`.
 
 The Linux CI path is important because production deploys depend on GNU command
-behavior and the static Linux amd64 `exchange-rename` helper.
+behavior and either native `mv --exchange` or the static Linux amd64
+`exchange-rename` fallback helper.
 
 ## Live E2E Matrix
 
@@ -149,7 +150,8 @@ Before pushing a release-sensitive change:
 
 1. Confirm public docs use `/srv/htdocs`, not `~/htdocs` or a symlinked home
    path.
-2. Confirm install docs mention only the Bash CLI and `exchange-rename` helper.
+2. Confirm install docs mention the Bash CLI, native `mv --exchange`, and the
+   `exchange-rename` fallback helper.
 3. Confirm auth docs describe `auth`, `doctor`, the state-managed deploy key,
    and the fact that the CLI does not edit `~/.ssh/config`.
 4. Confirm deploy docs preserve the `$HOME` state layout and docroot release

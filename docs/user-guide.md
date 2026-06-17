@@ -49,9 +49,11 @@ Required on the site:
   `rm`, `mkdir`, `mktemp`, `touch`, `stat`, and `date`
 - Git LFS only when your repository uses LFS-tracked paths
 
-The shipped `exchange-rename` helper is Linux amd64 and uses
-`renameat2(RENAME_EXCHANGE)`. Production deploys are expected to run on the
-site's Linux SSH environment, not on macOS.
+For reclaiming existing public paths, the CLI checks at runtime for
+`mv --exchange` and uses it when available. The shipped `exchange-rename`
+helper is a Linux amd64 fallback using `renameat2(RENAME_EXCHANGE)`.
+Production deploys are expected to run on the site's Linux SSH environment,
+not on macOS.
 
 ## Install Or Upgrade
 
@@ -76,8 +78,9 @@ The installer writes:
 - `$HOME/.wpcloud-site-git-deploy/bin/exchange-rename`
 
 For system or chroot packaging, `exchange-rename` may also be provided anywhere
-in the site user's `PATH`. The CLI prefers the managed helper above when it
-exists, then falls back to the first executable `exchange-rename` on `PATH`.
+in the site user's `PATH`. The CLI first uses native `mv --exchange` when
+available; if not, it prefers the managed helper above, then falls back to the
+first executable `exchange-rename` on `PATH`.
 
 It also removes the obsolete
 `$HOME/.wpcloud-site-git-deploy/lib/remote-deploy.sh` file if an older install
@@ -504,8 +507,8 @@ The tool is deliberately conservative:
   preserved.
 - Concurrent deployments sharing one docroot do not replace each other's active
   maintenance markers.
-- Existing public paths are reclaimed only through the Linux
-  `exchange-rename` helper.
+- Existing public paths are reclaimed through native `mv --exchange` when
+  available, otherwise through the Linux `exchange-rename` fallback helper.
 - Deploy-time assertions validate only the final claims owned by that
   deployment, while the hidden full-docroot audit remains available for tests
   and diagnostics.
