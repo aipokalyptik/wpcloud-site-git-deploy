@@ -1115,21 +1115,6 @@ same_file() {
   [[ "$(cd "$(dirname "$left")" && pwd -P)/$(basename "$left")" == "$(cd "$(dirname "$right")" && pwd -P)/$(basename "$right")" ]]
 }
 
-doctor_failures=0
-
-doctor_ok() {
-  printf 'OK %s: %s\n' "$1" "$2"
-}
-
-doctor_warn() {
-  printf 'WARN %s: %s\n' "$1" "$2"
-}
-
-doctor_fail() {
-  printf 'FAIL %s: %s\n' "$1" "$2"
-  doctor_failures=$((doctor_failures + 1))
-}
-
 # Public Command Handlers
 #
 # User-facing command implementations. These functions parse command-specific
@@ -1273,6 +1258,7 @@ cmd_doctor() {
   local host
   local repo_dir
   local helper
+  local doctor_failures=0
 
   # Report every setup problem found instead of failing on the first one so a
   # first-time user gets a complete repair checklist.
@@ -1281,73 +1267,82 @@ cmd_doctor() {
   arg_has --offline && offline=1
   args_finish
 
-  doctor_failures=0
   if load_config "$name"; then
-    doctor_ok config "deployment loaded"
+    printf 'OK config: deployment loaded\n'
   else
-    doctor_fail config "deployment is not initialized"
+    printf 'FAIL config: deployment is not initialized\n'
     return 1
   fi
 
   for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat date; do
     if command -v "$command_name" >/dev/null 2>&1; then
-      doctor_ok command "$command_name found"
+      printf 'OK command: %s found\n' "$command_name"
     else
-      doctor_fail command "$command_name is required"
+      printf 'FAIL command: %s is required\n' "$command_name"
+      doctor_failures=$((doctor_failures + 1))
     fi
   done
   if command -v ssh-keygen >/dev/null 2>&1; then
-    doctor_ok command "ssh-keygen found"
+    printf 'OK command: ssh-keygen found\n'
   else
-    doctor_warn command "ssh-keygen not found; auth and configured key validation will be unavailable"
+    printf 'WARN command: ssh-keygen not found; auth and configured key validation will be unavailable\n'
   fi
 
   if [[ -d "$docroot" ]]; then
-    doctor_ok docroot "exists: $docroot"
+    printf 'OK docroot: exists: %s\n' "$docroot"
     if [[ -w "$docroot" ]]; then
-      doctor_ok docroot "writable: $docroot"
+      printf 'OK docroot: writable: %s\n' "$docroot"
     else
-      doctor_fail docroot "not writable: $docroot"
+      printf 'FAIL docroot: not writable: %s\n' "$docroot"
+      doctor_failures=$((doctor_failures + 1))
     fi
   else
-    doctor_fail docroot "does not exist: $docroot"
+    printf 'FAIL docroot: does not exist: %s\n' "$docroot"
+    doctor_failures=$((doctor_failures + 1))
   fi
 
   if repo_host_from_url "$repo_url" >/dev/null 2>&1; then
     host="$(repo_host_from_url "$repo_url")"
-    doctor_ok repo "recognized host: $host"
+    printf 'OK repo: recognized host: %s\n' "$host"
   else
-    doctor_fail repo "could not parse repository URL: $repo_url"
+    printf 'FAIL repo: could not parse repository URL: %s\n' "$repo_url"
+    doctor_failures=$((doctor_failures + 1))
   fi
 
   if helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
-    doctor_ok helper "exchange-rename available: $helper"
+    printf 'OK helper: exchange-rename available: %s\n' "$helper"
   else
-    doctor_fail helper "exchange-rename helper is not available"
+    printf 'FAIL helper: exchange-rename helper is not available\n'
+    doctor_failures=$((doctor_failures + 1))
   fi
 
   if [[ -z "${ssh_key_path:-}" ]]; then
-    doctor_warn ssh-key "no deploy key configured; Git will use default credentials or public repository access"
+    printf 'WARN ssh-key: no deploy key configured; Git will use default credentials or public repository access\n'
   elif [[ ! -f "$ssh_key_path" ]]; then
-    doctor_fail ssh-key "private key is missing: $ssh_key_path"
+    printf 'FAIL ssh-key: private key is missing: %s\n' "$ssh_key_path"
+    doctor_failures=$((doctor_failures + 1))
   elif [[ ! -r "$ssh_key_path" ]]; then
-    doctor_fail ssh-key "private key is not readable: $ssh_key_path"
+    printf 'FAIL ssh-key: private key is not readable: %s\n' "$ssh_key_path"
+    doctor_failures=$((doctor_failures + 1))
   else
     mode="$(private_key_mode "$ssh_key_path")"
     if (( (8#$mode) & 0077 )); then
-      doctor_fail ssh-key "private key permissions are too open: $mode"
+      printf 'FAIL ssh-key: private key permissions are too open: %s\n' "$mode"
+      doctor_failures=$((doctor_failures + 1))
     else
-      doctor_ok ssh-key "private key is readable"
+      printf 'OK ssh-key: private key is readable\n'
       if ! command -v ssh-keygen >/dev/null 2>&1; then
-        doctor_fail ssh-key "ssh-keygen is required to validate deploy keys"
+        printf 'FAIL ssh-key: ssh-keygen is required to validate deploy keys\n'
+        doctor_failures=$((doctor_failures + 1))
       elif private_key_public_key "$ssh_key_path" >/dev/null; then
         if [[ -f "$ssh_key_path.pub" ]]; then
-          doctor_ok ssh-key "public key exists"
+          printf 'OK ssh-key: public key exists\n'
         else
-          doctor_ok ssh-key "public key can be derived"
+          printf 'OK ssh-key: public key can be derived\n'
         fi
       else
-        doctor_fail ssh-key "private key cannot be used without prompting or is not a valid private key: $ssh_key_path"
+        printf 'FAIL ssh-key: private key cannot be used without prompting or is not a valid private key: %s\n' "$ssh_key_path"
+        doctor_failures=$((doctor_failures + 1))
       fi
     fi
   fi
@@ -1355,22 +1350,25 @@ cmd_doctor() {
   repo_dir="$(repo_dir_for "$name")"
   if [[ -d "$repo_dir/.git" ]] && git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
     if command -v git-lfs >/dev/null 2>&1; then
-      doctor_ok git-lfs "available for cached LFS-tracked repository"
+      printf 'OK git-lfs: available for cached LFS-tracked repository\n'
     else
-      doctor_fail git-lfs "git-lfs is required for cached LFS-tracked repository"
+      printf 'FAIL git-lfs: git-lfs is required for cached LFS-tracked repository\n'
+      doctor_failures=$((doctor_failures + 1))
     fi
   else
-    doctor_warn git-lfs "not checked; no root .gitattributes LFS marker found in cached HEAD"
+    printf 'WARN git-lfs: not checked; no root .gitattributes LFS marker found in cached HEAD\n'
   fi
 
   if ((offline)); then
-    doctor_warn git-remote "skipped remote access check because --offline was provided"
+    printf 'WARN git-remote: skipped remote access check because --offline was provided\n'
   elif git_with_auth ls-remote "$repo_url" HEAD >/dev/null 2>&1; then
-    doctor_ok git-remote "remote access succeeded"
+    printf 'OK git-remote: remote access succeeded\n'
   elif [[ -z "${ssh_key_path:-}" ]]; then
-    doctor_fail git-remote "remote access failed without a configured deploy key; run auth for private SSH repositories or check repository access"
+    printf 'FAIL git-remote: remote access failed without a configured deploy key; run auth for private SSH repositories or check repository access\n'
+    doctor_failures=$((doctor_failures + 1))
   else
-    doctor_fail git-remote "remote access failed; add the deploy key to the repository host or check repository access"
+    printf 'FAIL git-remote: remote access failed; add the deploy key to the repository host or check repository access\n'
+    doctor_failures=$((doctor_failures + 1))
   fi
 
   ((doctor_failures == 0))
