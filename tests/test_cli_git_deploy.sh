@@ -112,6 +112,12 @@ awk '
   END { exit state == 10 ? 0 : 1 }
 ' "$cli" || fail "script sections should be documented and ordered consistently"
 awk '
+  /^# Runtime, Git, And Repository Helpers/ { in_runtime=1 }
+  /^# Deploy Orchestration And Release Metadata/ { exit seen_repo_dir ? 0 : 1 }
+  in_runtime && /^repo_dir_for\(\) \{/ { seen_repo_dir=1 }
+  END { exit seen_repo_dir ? 0 : 1 }
+' "$cli" || fail "repo_dir_for should stay with runtime repository helpers"
+awk '
   /^cmd_[A-Za-z0-9_]+\(\) \{/ {
     in_cmd=1
     cmd=$0
