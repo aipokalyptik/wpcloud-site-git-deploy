@@ -82,7 +82,7 @@ flowchart TD
   POST --> RMNT["Remove owned maintenance marker"]
   RMNT --> PRUNE["prune_releases"]
   PRUNE --> ENGRET["Engine subshell returns to deploy_ref"]
-  ENGRET --> META["write_release_metadata"]
+  ENGRET --> META["write_release_metadata as metadata/<release-id>/cfg-* files"]
   META --> CLEAN["cleanup_worktree"]
   CLEAN --> OUT["Print release_id ref_mode commit"]
 

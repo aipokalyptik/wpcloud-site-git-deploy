@@ -15,10 +15,6 @@ readonly -a REJECTED_SHARED_PATHS=(wp-content/cache wp-content/upgrade .maintena
 # Persistent media containers may hold deploy-managed regular-file leaf symlinks,
 # but the containers themselves remain owned by WordPress.
 readonly -a SHARED_CONTAINER_PATHS=(wp-content/uploads wp-content/blogs.dir)
-# Metadata keys written for each successful release and accepted by the
-# non-executing metadata reader.
-readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
-
 # Location of this checked-out or installed CLI. Source installs use REPO_ROOT
 # to find the bundled helper; managed installs primarily use STATE_DIR instead.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,12 +85,6 @@ docroot_deployment_base() {
   local id="$2"
 
   printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
-}
-
-write_config_value() {
-  local key="$1"
-  local value="$2"
-  printf '%s=%s\n' "$key" "$(shell_quote "$value")"
 }
 
 # Deployment config and state
@@ -259,7 +249,7 @@ require_deploy_root() {
   [[ -n "$value" ]] || die "deploy-root must be a safe relative path"
   # Absolute paths would let deploy-root escape the checked-out repository.
   [[ "$value" != /* ]] || die "deploy-root must be a safe relative path"
-  # Newlines would corrupt shell config and metadata line formats.
+  # Newlines would corrupt the one-value-per-file config and metadata format.
   [[ "$value" != *$'\n'* ]] || die "deploy-root must be a safe relative path"
   # A trailing slash creates an empty final component and makes equivalent
   # paths serialize differently.
@@ -580,108 +570,65 @@ write_release_metadata() {
   local ref_value="$3"
   local commit="$4"
   local metadata_dir
-  local metadata_file
-  local key
-  local value
 
-  metadata_dir="$(docroot_deployment_base "$docroot" "$deployment_id")/metadata"
-  metadata_file="$metadata_dir/$release_id.env"
+  metadata_dir="$(release_metadata_dir "$release_id")"
   mkdir -p "$metadata_dir"
-  {
-    for key in "${RELEASE_METADATA_KEYS[@]}"; do
-      case "$key" in
-        release_id)
-          value="$release_id"
-          ;;
-        ref_mode)
-          value="$mode"
-          ;;
-        ref_value)
-          value="$ref_value"
-          ;;
-        commit)
-          value="$commit"
-          ;;
-        deploy_root)
-          value="${deploy_root:-}"
-          ;;
-        deployed_at)
-          value="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          ;;
-        *)
-          die "unmapped release metadata key: $key"
-          ;;
-      esac
-      write_config_value "$key" "$value"
-    done
-  } >"$metadata_file"
+  write_metadata_value "$metadata_dir" release_id "$release_id"
+  write_metadata_value "$metadata_dir" ref_mode "$mode"
+  write_metadata_value "$metadata_dir" ref_value "$ref_value"
+  write_metadata_value "$metadata_dir" commit "$commit"
+  write_metadata_value "$metadata_dir" deploy_root "${deploy_root:-}"
+  write_metadata_value "$metadata_dir" deployed_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 }
 
-metadata_key_allowed() {
-  local key="$1"
-  local allowed
+release_metadata_dir() {
+  local release_id="$1"
 
-  for allowed in "${RELEASE_METADATA_KEYS[@]}"; do
-    [[ "$key" == "$allowed" ]] && return 0
-  done
-  return 1
+  printf '%s/metadata/%s\n' "$(docroot_deployment_base "$docroot" "$deployment_id")" "$release_id"
 }
 
-metadata_unquote() {
-  local value="$1"
-  local output=""
-  local char
+write_metadata_value() {
+  local metadata_dir="$1"
+  local key="$2"
+  local value="$3"
+  local path="$metadata_dir/cfg-$key"
+  local tmp_path="$path.tmp.$$"
 
-  if [[ "$value" == "''" ]]; then
-    printf '\n'
-    return 0
-  fi
-
-  while [[ -n "$value" ]]; do
-    char="${value:0:1}"
-    value="${value:1}"
-    if [[ "$char" == "\\" && -n "$value" ]]; then
-      char="${value:0:1}"
-      value="${value:1}"
-    fi
-    output+="$char"
-  done
-  printf '%s\n' "$output"
+  [[ "$value" != *$'\n'* ]] || die "release metadata value must not contain newlines: $key"
+  printf '%s\n' "$value" >"$tmp_path"
+  mv -f "$tmp_path" "$path"
 }
 
 metadata_value() {
-  local metadata_file="$1"
+  local metadata_dir="$1"
   local key="$2"
-  local line
-  local value
+  local path="$metadata_dir/cfg-$key"
 
-  metadata_key_allowed "$key" || return 1
-  line="$(grep -m 1 -E "^${key}=" "$metadata_file" 2>/dev/null)" || return 0
-  value="${line#*=}"
-  metadata_unquote "$value"
+  [[ -f "$path" ]] || return 0
+  cat "$path"
 }
 
-current_release_metadata_file() {
+current_release_metadata_dir() {
   local current
-  local metadata_file
+  local metadata_dir
 
   current="$(current_release_id || true)"
   [[ -n "$current" ]] || return 1
-  metadata_file="$(docroot_deployment_base "$docroot" "$deployment_id")/metadata/$current.env"
-  [[ -f "$metadata_file" ]] || return 1
-  printf '%s\n' "$metadata_file"
+  metadata_dir="$(release_metadata_dir "$current")"
+  [[ -d "$metadata_dir" ]] || return 1
+  printf '%s\n' "$metadata_dir"
 }
 
 current_release_matches() {
   local commit="$1"
   local expected_deploy_root="${2:-}"
-  local metadata_file
+  local metadata_dir
   local metadata_commit
   local metadata_deploy_root
 
-  metadata_file="$(current_release_metadata_file)" || return 1
-  metadata_commit="$(metadata_value "$metadata_file" commit)"
-  metadata_deploy_root="$(metadata_value "$metadata_file" deploy_root)"
+  metadata_dir="$(current_release_metadata_dir)" || return 1
+  metadata_commit="$(metadata_value "$metadata_dir" commit)"
+  metadata_deploy_root="$(metadata_value "$metadata_dir" deploy_root)"
 
   [[ "$metadata_commit" == "$commit" && "$metadata_deploy_root" == "$expected_deploy_root" ]]
 }
@@ -771,7 +718,7 @@ current_release_id() {
 select_rollback_release() {
   local base
   local current="${1:-}"
-  local metadata_file
+  local metadata_dir
   local release_name
   local metadata_candidates="$TMP_DIR/rollback-candidates.$$.txt"
 
@@ -781,10 +728,9 @@ select_rollback_release() {
   # releases instead of blindly picking the newest directory.
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   : >"$metadata_candidates"
-  find "$base/metadata" -mindepth 1 -maxdepth 1 -type f -name '*.env' 2>/dev/null |
-    while IFS= read -r metadata_file; do
-      release_name="${metadata_file##*/}"
-      release_name="${release_name%.env}"
+  find "$base/metadata" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
+    while IFS= read -r metadata_dir; do
+      release_name="${metadata_dir##*/}"
       [[ "$release_name" == "$current" ]] && continue
       [[ -d "$base/releases/$release_name" ]] || continue
       printf '%s\n' "$base/releases/$release_name"
@@ -1477,10 +1423,10 @@ cmd_releases() {
   current="$(current_release_id || true)"
   find "$base/releases" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r |
   while IFS= read -r release; do
-    metadata="$base/metadata/${release##*/}.env"
+    metadata="$base/metadata/${release##*/}"
     printf '%s' "${release##*/}"
     [[ "${release##*/}" == "$current" ]] && printf ' current'
-    if [[ -f "$metadata" ]]; then
+    if [[ -d "$metadata" ]]; then
       commit="$(metadata_value "$metadata" commit)"
       ref_mode="$(metadata_value "$metadata" ref_mode)"
       ref_value="$(metadata_value "$metadata" ref_value)"

@@ -104,6 +104,8 @@ Current live coverage includes:
 - Custom configured maintenance file behavior.
 - Complex path deploy.
 - File removal.
+- Release metadata storage as `metadata/<release-id>/cfg-*` value files,
+  including no-op and release-list reads without evaluating unexpected files.
 - File-to-directory and directory-to-file swaps.
 - Symlink deploy.
 - Git LFS add and remove.

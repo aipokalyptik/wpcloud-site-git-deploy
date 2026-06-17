@@ -65,12 +65,7 @@ assert_contains "wpcloud-site-git-deploy update site --force" "$repo_root/README
 assert_contains "wpcloud-site-git-deploy config site --post-deploy" "$repo_root/README.md"
 assert_contains "wpcloud-site-git-deploy config site --maintenance-file none" "$repo_root/README.md"
 
-awk '
-  /write_release_metadata\(\)/ { in_func=1 }
-  in_func && /\*\)/ { default_arm=1 }
-  in_func && /die "unmapped release metadata key:/ { unmapped_die=1 }
-  in_func && /^}/ { exit default_arm && unmapped_die ? 0 : 1 }
-' "$cli" || fail "write_release_metadata should fail for unmapped release metadata keys"
+assert_not_contains "metadata_unquote()" "$cli"
 
 fake_bin="$tmpdir/bin"
 source_repo="$tmpdir/source"
@@ -150,6 +145,14 @@ chmod 600 "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
 
 first_deploy="$(HOME="$home_dir" "$cli" deploy site --tag v1)"
 first_release="${first_deploy%% *}"
+first_metadata_dir="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$first_release"
+[[ -d "$first_metadata_dir" ]] || fail "release metadata should be stored as a directory"
+[[ ! -e "$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$first_release.env" ]] || fail "release metadata should not use .env files"
+[[ "$(cat "$first_metadata_dir/cfg-release_id")" == "$first_release" ]] || fail "metadata should store release id as a value file"
+[[ "$(cat "$first_metadata_dir/cfg-ref_mode")" == "tag" ]] || fail "metadata should store ref mode as a value file"
+[[ "$(cat "$first_metadata_dir/cfg-ref_value")" == "v1" ]] || fail "metadata should store ref value as a value file"
+[[ "$(cat "$first_metadata_dir/cfg-commit")" == "$main_commit" ]] || fail "metadata should store commit as a value file"
+[[ -f "$first_metadata_dir/cfg-deployed_at" ]] || fail "metadata should store deployed_at as a value file"
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy did not publish v1 content"
 [[ ! -e "$docroot/.gitignore" ]] || fail ".gitignore should be excluded by default"
 [[ ! -e "$docroot/.gitattributes" ]] || fail ".gitattributes should be excluded by default"
@@ -435,15 +438,13 @@ assert_contains "blocked:$docroot:concurrent deploy content" "$blocking_marker"
 
 tampered_release="$(HOME="$home_dir" "$cli" status site | awk -F= '/^current=/{print $2}')"
 tampered_commit="$(HOME="$home_dir" "$cli" releases site | awk '$1 == "'"$tampered_release"'" { if ($2 == "current") print $3; else print $2 }')"
-metadata_file="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$tampered_release.env"
+metadata_dir="$docroot/.wpcloud-site-git-deploy/deployments/site/metadata/$tampered_release"
 tamper_marker="$tmpdir/metadata-executed"
-{
-  printf 'commit=%q\n' "$tampered_commit"
-  printf 'ref_mode=branch\n'
-  printf 'ref_value=main\n'
-  printf 'deploy_root=\n'
-  printf 'touch %q\n' "$tamper_marker"
-} >"$metadata_file"
+printf '%s\n' "$tampered_commit" >"$metadata_dir/cfg-commit"
+printf '%s\n' branch >"$metadata_dir/cfg-ref_mode"
+printf '%s\n' main >"$metadata_dir/cfg-ref_value"
+: >"$metadata_dir/cfg-deploy_root"
+printf 'touch %q\n' "$tamper_marker" >"$metadata_dir/cfg-extra"
 HOME="$home_dir" "$cli" update site >"$tmpdir/noop-tampered.txt"
 assert_contains "no-op $tampered_release branch $tampered_commit" "$tmpdir/noop-tampered.txt"
 [[ ! -e "$tamper_marker" ]] || fail "metadata parser should not execute shell from no-op path"

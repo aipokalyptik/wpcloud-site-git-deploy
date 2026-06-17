@@ -324,7 +324,8 @@ Rollback uses the same conservative symlink reconciliation path as deploy. It fl
 
 When `--to` is omitted, rollback prefers metadata-backed successful releases
 and skips failed promotions that left a release directory without success
-metadata.
+metadata. Release metadata is stored as one value per file under
+`/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/metadata/<release-id>/cfg-*`.
 
 ## Development
 
