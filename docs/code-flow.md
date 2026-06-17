@@ -58,7 +58,8 @@ flowchart TD
   DR8 --> PR["promote_release"]
 
   PR --> RDE["run_engine_subshell -> cmd_remote_deploy --release-id"]
-  RDE --> ERQ["require_remote_capabilities"]
+  RDE --> EXC["Probe mv --exchange once, cache ENGINE_MV_EXCHANGE, and set default exchange helper when needed"]
+  EXC --> ERQ["require_remote_capabilities"]
   ERQ --> ELOCK["Acquire deploy lock"]
   ELOCK -->|busy| EBUSY["Fail: deployment already running"]
   ELOCK -->|acquired| EMNT["Clean stale owned maintenance marker and create current marker unless disabled"]
@@ -74,7 +75,7 @@ flowchart TD
   EACT --> EACT1["cleanup overlapping removed symlinks"]
   EACT1 --> EACT2["reconcile_new_claims"]
   EACT2 --> EACT3["reject foreign deployment ancestor/exact/descendant conflicts"]
-  EACT3 --> EACT4["Create public symlink or atomically exchange existing path with mv --exchange or exchange-rename"]
+  EACT3 --> EACT4["Create public symlink or atomically exchange existing path using cached mv --exchange decision or exchange-rename"]
   EACT4 --> EACT5["switch_current atomically"]
   EACT5 --> EACT6["cleanup exchanged paths and removed claims"]
   EACT6 --> EACT7["assert_claim_symlinks_under_docroot"]
@@ -93,7 +94,8 @@ flowchart TD
   RB3 -->|no| RB4["select_rollback_release from metadata-backed releases"]
   RB3 -->|yes| RBR["run_engine_subshell -> cmd_remote_deploy --rollback-to"]
   RB4 --> RBR
-  RBR --> RRC["require_remote_capabilities"]
+  RBR --> REXC["Probe mv --exchange once, cache ENGINE_MV_EXCHANGE, and set default exchange helper when needed"]
+  REXC --> RRC["require_remote_capabilities"]
   RRC --> RLOCK["Acquire deploy lock"]
   RLOCK -->|busy| RBUSY["Fail: deployment already running"]
   RLOCK -->|acquired| RMNT1["Clean stale owned maintenance marker and create rollback marker unless disabled"]
@@ -123,7 +125,7 @@ flowchart TD
 
   C -->|__remote-deploy| H["Hidden test/internal command"]
   H --> CRD["cmd_remote_deploy"]
-  CRD --> CRD1["Parse deploy, rollback, or audit mode and run the matching engine path"]
+  CRD --> CRD1["Parse deploy, rollback, or audit mode, cache exchange capability for engine runs, and run the matching path"]
 
   C -->|--help / --version| HV["Print usage/version"]
 ```
