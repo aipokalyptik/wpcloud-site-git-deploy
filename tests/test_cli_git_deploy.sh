@@ -20,6 +20,17 @@ assert_not_contains() {
   fi
 }
 
+assert_fails_contains() {
+  local needle="$1"
+  local file="$2"
+  shift 2
+
+  if "$@" >"$file" 2>&1; then
+    fail "expected command to fail: $*"
+  fi
+  assert_contains "$needle" "$file"
+}
+
 inode_of() {
   stat -c '%i' "$1"
 }
@@ -66,6 +77,22 @@ assert_contains "wpcloud-site-git-deploy config site --post-deploy" "$repo_root/
 assert_contains "wpcloud-site-git-deploy config site --maintenance-file none" "$repo_root/README.md"
 
 assert_not_contains "metadata_unquote()" "$cli"
+awk '
+  /^cmd_[A-Za-z0-9_]+\(\) \{/ {
+    in_cmd=1
+    cmd=$0
+  }
+  in_cmd && /while \(\(\$#\)\); do/ {
+    print cmd ": " $0
+    found=1
+  }
+  in_cmd && /^}/ {
+    in_cmd=0
+  }
+  END {
+    exit found ? 1 : 0
+  }
+' "$cli" || fail "cmd_* handlers should use argument helpers instead of command-local while/case parsers"
 
 fake_bin="$tmpdir/bin"
 source_repo="$tmpdir/source"
@@ -74,6 +101,7 @@ plain_home_dir="$tmpdir/plain-home"
 docroot="$tmpdir/docroot"
 plain_docroot="$tmpdir/plain-docroot"
 mkdir -p "$fake_bin" "$source_repo" "$home_dir" "$plain_home_dir" "$docroot" "$plain_docroot"
+"$cli" __remote-deploy --docroot="$docroot" --assert-public-symlinks >/dev/null
 touch "$tmpdir/gitconfig"
 export GIT_CONFIG_GLOBAL="$tmpdir/gitconfig"
 system_git="$(command -v git)"
@@ -120,8 +148,27 @@ git -C "$source_repo" commit -m "feature content" >/dev/null
 feature_commit="$(git -C "$source_repo" rev-parse HEAD)"
 git -C "$source_repo" branch feature "$feature_commit"
 
+assert_fails_contains "unknown init argument: --bogus" "$tmpdir/parser-init-unknown.txt" \
+  env HOME="$home_dir" "$cli" init site --bogus
+assert_fails_contains "--repo requires a value" "$tmpdir/parser-init-missing-repo.txt" \
+  env HOME="$home_dir" "$cli" init site --repo
+assert_fails_contains "--branch requires a value" "$tmpdir/parser-deploy-missing-branch.txt" \
+  env HOME="$home_dir" "$cli" deploy site --branch
+assert_fails_contains "--post-deploy requires a value" "$tmpdir/parser-update-missing-post-deploy.txt" \
+  env HOME="$home_dir" "$cli" update site --post-deploy
+assert_fails_contains "--maintenance-file requires a value" "$tmpdir/parser-update-missing-maintenance.txt" \
+  env HOME="$home_dir" "$cli" update site --maintenance-file
+assert_fails_contains "--limit requires a value" "$tmpdir/parser-branches-missing-limit.txt" \
+  env HOME="$home_dir" "$cli" branches site --limit
+assert_fails_contains "--docroot requires a value" "$tmpdir/parser-engine-missing-docroot.txt" \
+  "$cli" __remote-deploy --docroot
+assert_fails_contains "choose only one ref" "$tmpdir/parser-deploy-ref-conflict.txt" \
+  env HOME="$home_dir" "$cli" deploy site --branch main --tag v1
+assert_fails_contains "choose only one config option" "$tmpdir/parser-config-conflict.txt" \
+  env HOME="$home_dir" "$cli" config site --clear-deploy-root --clear-post-deploy
+
 HOME="$home_dir" "$cli" init site \
-  --repo "$source_repo" \
+  --repo="$source_repo" \
   --docroot "$docroot" \
   --deployment-id site \
   --default-ref main >/dev/null

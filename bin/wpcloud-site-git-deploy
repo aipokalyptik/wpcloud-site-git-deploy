@@ -32,6 +32,16 @@ KEYS_DIR="$STATE_DIR/keys"
 # Fallback helper path when running directly from a source checkout.
 HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 
+# Shared parser state for the currently executing command. These variables are
+# intentionally reset by args_begin for each cmd_* handler so the public command
+# functions can declare accepted options and then read named values without
+# carrying a bespoke while/case parser in every function.
+ARGS_COMMAND=""
+ARGS_DIE_FUNC="die"
+ARGS=()
+ARGS_ALLOWED=()
+ARGS_CONSUMED=()
+
 # Common CLI helpers
 
 usage() {
@@ -85,6 +95,247 @@ docroot_deployment_base() {
   local id="$2"
 
   printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
+}
+
+# Command argument helpers
+#
+# The helpers below are intentionally stricter than a simple "scan all args"
+# pattern. They mark each option and option value as consumed, then args_finish
+# rejects anything that remains. That keeps the readability benefit of named
+# accessors while preserving the old parser guarantees: unknown options fail,
+# stray positional arguments fail, and missing values point at the exact option
+# that caused the error.
+
+args_begin_with_die() {
+  ARGS_DIE_FUNC="$1"
+  ARGS_COMMAND="$2"
+  shift 2
+  ARGS=("$@")
+  ARGS_ALLOWED=()
+  ARGS_CONSUMED=()
+}
+
+# Starts parsing a public command and resets all parser state from any prior
+# command invocation.
+args_begin() {
+  args_begin_with_die die "$@"
+}
+
+# Routes parser failures through either die or engine_die, depending on the
+# current command context.
+args_die() {
+  "$ARGS_DIE_FUNC" "$1"
+}
+
+# Declares boolean options that are valid for the current command. Declaration
+# alone does not consume an option; the command must call arg_flag for each flag
+# it actually wants to read.
+args_allow_flags() {
+  local option
+
+  for option in "$@"; do
+    ARGS_ALLOWED+=("$option")
+  done
+}
+
+# Declares options that require a value. Values are consumed by arg_value or
+# arg_value_count so args_finish can still reject missing values and strays.
+args_allow_values() {
+  local option
+
+  for option in "$@"; do
+    ARGS_ALLOWED+=("$option")
+  done
+}
+
+args_mark_consumed() {
+  local index="$1"
+
+  ARGS_CONSUMED[index]=1
+}
+
+args_is_consumed() {
+  local index="$1"
+
+  [[ "${ARGS_CONSUMED[$index]:-0}" == "1" ]]
+}
+
+args_option_allowed() {
+  local option="$1"
+  local allowed
+
+  for allowed in "${ARGS_ALLOWED[@]}"; do
+    [[ "$option" == "$allowed" ]] && return 0
+  done
+  return 1
+}
+
+# Leaves validation centralized: after a cmd_* handler has read all expected
+# options, any remaining token is either an unhandled known option, an unknown
+# option, or a stray positional argument.
+args_finish() {
+  local index
+  local arg
+  local option
+  local unknown_message
+
+  for index in "${!ARGS[@]}"; do
+    args_is_consumed "$index" && continue
+    arg="${ARGS[$index]}"
+    option="${arg%%=*}"
+
+    if [[ "$arg" == --* && "$arg" != *=* ]] && args_option_allowed "$option"; then
+      args_die "$option requires a value"
+    fi
+    if [[ "$ARGS_COMMAND" == "argument" ]]; then
+      unknown_message="unknown argument: $option"
+    else
+      unknown_message="unknown ${ARGS_COMMAND} argument: $option"
+    fi
+    args_die "$unknown_message"
+  done
+}
+
+# Reads a boolean flag into the named destination variable. Repeated flags are
+# allowed and collapse to 1, matching the old hand-written parsers.
+arg_flag() {
+  local dest="$1"
+  local needle="$2"
+  local index
+
+  printf -v "$dest" 0
+  for index in "${!ARGS[@]}"; do
+    [[ "${ARGS[$index]}" == "$needle" ]] || continue
+    printf -v "$dest" 1
+    args_mark_consumed "$index"
+  done
+}
+
+# Reads an option value from either "--option VALUE" or "--option=VALUE". The
+# last value wins to match the old parsers for repeated value options. Callers
+# that need duplicate detection use the returned count.
+arg_value_count() {
+  local dest="$1"
+  local count_dest="$2"
+  local key="$3"
+  local validator="${4:-}"
+  local index
+  local arg
+  local arg_parsed_value
+  local value_index
+  local arg_parsed_count=0
+
+  for index in "${!ARGS[@]}"; do
+    arg="${ARGS[$index]}"
+    if [[ "$arg" == "$key" ]]; then
+      value_index=$((index + 1))
+      ((value_index < ${#ARGS[@]})) || args_die "$key requires a value"
+      arg_parsed_value="${ARGS[$value_index]}"
+      [[ "$arg_parsed_value" != --* ]] || args_die "$key requires a value"
+      args_mark_consumed "$index"
+      args_mark_consumed "$value_index"
+      printf -v "$dest" '%s' "$arg_parsed_value"
+      arg_parsed_count=$((arg_parsed_count + 1))
+    elif [[ "$arg" == "$key="* ]]; then
+      arg_parsed_value="${arg#*=}"
+      [[ -n "$arg_parsed_value" || -n "$validator" ]] || args_die "$key requires a value"
+      args_mark_consumed "$index"
+      printf -v "$dest" '%s' "$arg_parsed_value"
+      arg_parsed_count=$((arg_parsed_count + 1))
+    fi
+  done
+
+  if ((arg_parsed_count > 0)) && [[ -n "$validator" ]]; then
+    "$validator" "${!dest}"
+  fi
+  printf -v "$count_dest" '%s' "$arg_parsed_count"
+}
+
+arg_value() {
+  local dest="$1"
+  local key="$2"
+  local validator="${3:-}"
+  local parsed_count
+
+  arg_value_count "$dest" parsed_count "$key" "$validator"
+  : "$parsed_count"
+}
+
+# Reads exactly one deploy ref selector, such as --branch, --tag, or --commit,
+# and rejects both mixed selectors and repeated selectors.
+arg_ref_choice() {
+  local mode_dest="$1"
+  local value_dest="$2"
+  local found=0
+  local option_name
+  local mode_name
+  local parsed_value
+  local parsed_count
+
+  shift 2
+  printf -v "$mode_dest" ''
+  printf -v "$value_dest" ''
+
+  while (($#)); do
+    option_name="$1"
+    mode_name="$2"
+    shift 2
+
+    parsed_value=""
+    arg_value_count parsed_value parsed_count "$option_name"
+    if ((parsed_count > 0)); then
+      ((found == 0 && parsed_count == 1)) || args_die "choose only one ref"
+      printf -v "$mode_dest" '%s' "$mode_name"
+      printf -v "$value_dest" '%s' "$parsed_value"
+      found=$((found + parsed_count))
+    fi
+  done
+}
+
+# Handles commands such as config where exactly one option represents the
+# action. Value actions can validate immediately; flag actions use "-" as the
+# validator marker.
+arg_one_action() {
+  local action_dest="$1"
+  local value_dest="$2"
+  local option_name
+  local action_name
+  local validator
+  local flag_present
+  local parsed_value
+  local parsed_count
+  local action_count=0
+
+  shift 2
+  printf -v "$action_dest" ''
+  printf -v "$value_dest" ''
+
+  while (($#)); do
+    option_name="$1"
+    action_name="$2"
+    validator="$3"
+    shift 3
+
+    if [[ "$validator" == "-" ]]; then
+      arg_flag flag_present "$option_name"
+      if ((flag_present)); then
+        action_count=$((action_count + 1))
+        printf -v "$action_dest" '%s' "$action_name"
+        printf -v "$value_dest" ''
+      fi
+    else
+      parsed_value=""
+      arg_value_count parsed_value parsed_count "$option_name" "$validator"
+      if ((parsed_count > 0)); then
+        action_count=$((action_count + 1))
+        printf -v "$action_dest" '%s' "$action_name"
+        printf -v "$value_dest" '%s' "$parsed_value"
+      fi
+    fi
+  done
+
+  ((action_count > 0)) || args_die "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
+  ((action_count == 1)) || args_die "choose only one config option"
 }
 
 # Deployment config and state
@@ -883,37 +1134,16 @@ cmd_auth() {
   # Configure exactly one deploy key source for this deployment: generated
   # managed key, external key path, imported managed copy, or removal.
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --force-new-key)
-        force_new_key=1
-        shift
-        ;;
-      --verify)
-        verify=1
-        shift
-        ;;
-      --remove)
-        remove=1
-        shift
-        ;;
-      --purge-key)
-        purge_key=1
-        shift
-        ;;
-      --use-key)
-        use_key="${2:-}"
-        shift 2
-        ;;
-      --import-key)
-        import_key="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown auth argument: $1"
-        ;;
-    esac
-  done
+  args_begin auth "$@"
+  args_allow_flags --force-new-key --verify --remove --purge-key
+  args_allow_values --use-key --import-key
+  arg_flag force_new_key --force-new-key
+  arg_flag verify --verify
+  arg_flag remove --remove
+  arg_flag purge_key --purge-key
+  arg_value use_key --use-key
+  arg_value import_key --import-key
+  args_finish
 
   load_config "$name"
   ensure_state_dirs
@@ -1031,17 +1261,10 @@ cmd_doctor() {
   # Report every setup problem found instead of failing on the first one so a
   # first-time user gets a complete repair checklist.
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --offline)
-        offline=1
-        shift
-        ;;
-      *)
-        die "unknown doctor argument: $1"
-        ;;
-    esac
-  done
+  args_begin doctor "$@"
+  args_allow_flags --offline
+  arg_flag offline --offline
+  args_finish
 
   doctor_failures=0
   if load_config "$name"; then
@@ -1141,79 +1364,49 @@ cmd_doctor() {
 cmd_config() {
   local name="${1:-}"
   shift || true
-  local set_deploy_root=""
-  local clear_deploy_root=0
-  local set_post_deploy=""
-  local set_post_deploy_provided=0
-  local clear_post_deploy=0
-  local set_maintenance_file=""
-  local set_maintenance_file_provided=0
-  local selected=0
+  local action=""
+  local action_value=""
 
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --deploy-root)
-        set_deploy_root="${2:-}"
-        shift 2
-        ;;
-      --clear-deploy-root)
-        clear_deploy_root=1
-        shift
-        ;;
-      --post-deploy)
-        set_post_deploy="${2:-}"
-        set_post_deploy_provided=1
-        shift 2
-        ;;
-      --clear-post-deploy)
-        clear_post_deploy=1
-        shift
-        ;;
-      --maintenance-file)
-        set_maintenance_file="${2:-}"
-        set_maintenance_file_provided=1
-        shift 2
-        ;;
-      *)
-        die "unknown config argument: $1"
-        ;;
-    esac
-  done
-
-  [[ -n "$set_deploy_root" ]] && selected=$((selected + 1))
-  [[ "$clear_deploy_root" -eq 1 ]] && selected=$((selected + 1))
-  [[ "$set_post_deploy_provided" -eq 1 ]] && selected=$((selected + 1))
-  [[ "$clear_post_deploy" -eq 1 ]] && selected=$((selected + 1))
-  [[ "$set_maintenance_file_provided" -eq 1 ]] && selected=$((selected + 1))
-  [[ "$selected" -gt 0 ]] || die "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
-  [[ "$selected" -eq 1 ]] || die "choose only one config option"
+  args_begin config "$@"
+  args_allow_flags --clear-deploy-root --clear-post-deploy
+  args_allow_values --deploy-root --post-deploy --maintenance-file
+  arg_one_action action action_value \
+    --deploy-root set-deploy-root require_deploy_root \
+    --clear-deploy-root clear-deploy-root - \
+    --post-deploy set-post-deploy require_post_deploy_path \
+    --clear-post-deploy clear-post-deploy - \
+    --maintenance-file set-maintenance-file require_maintenance_file
+  args_finish
 
   load_config "$name"
-  if [[ -n "$set_deploy_root" ]]; then
-    require_deploy_root "$set_deploy_root"
-    deploy_root="$set_deploy_root"
-    write_config "$name"
-    printf 'configured %s deploy_root=%s\n' "$name" "$deploy_root"
-  elif [[ "$clear_deploy_root" -eq 1 ]]; then
-    deploy_root=""
-    write_config "$name"
-    printf 'cleared %s deploy_root\n' "$name"
-  elif [[ "$set_post_deploy_provided" -eq 1 ]]; then
-    require_post_deploy_path "$set_post_deploy"
-    post_deploy="$set_post_deploy"
-    write_config "$name"
-    printf 'configured %s post_deploy=%s\n' "$name" "$post_deploy"
-  elif [[ "$clear_post_deploy" -eq 1 ]]; then
-    post_deploy=""
-    write_config "$name"
-    printf 'cleared %s post_deploy\n' "$name"
-  else
-    require_maintenance_file "$set_maintenance_file"
-    maintenance_file="$set_maintenance_file"
-    write_config "$name"
-    printf 'configured %s maintenance_file=%s\n' "$name" "$maintenance_file"
-  fi
+  case "$action" in
+    set-deploy-root)
+      deploy_root="$action_value"
+      write_config "$name"
+      printf 'configured %s deploy_root=%s\n' "$name" "$deploy_root"
+      ;;
+    clear-deploy-root)
+      deploy_root=""
+      write_config "$name"
+      printf 'cleared %s deploy_root\n' "$name"
+      ;;
+    set-post-deploy)
+      post_deploy="$action_value"
+      write_config "$name"
+      printf 'configured %s post_deploy=%s\n' "$name" "$post_deploy"
+      ;;
+    clear-post-deploy)
+      post_deploy=""
+      write_config "$name"
+      printf 'cleared %s post_deploy\n' "$name"
+      ;;
+    set-maintenance-file)
+      maintenance_file="$action_value"
+      write_config "$name"
+      printf 'configured %s maintenance_file=%s\n' "$name" "$maintenance_file"
+      ;;
+  esac
 }
 
 cmd_init() {
@@ -1228,41 +1421,16 @@ cmd_init() {
   local init_maintenance_file="$DEFAULT_MAINTENANCE_FILE"
 
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --repo)
-        repo="${2:-}"
-        shift 2
-        ;;
-      --docroot)
-        init_docroot="${2:-}"
-        shift 2
-        ;;
-      --deployment-id)
-        init_deployment_id="${2:-}"
-        shift 2
-        ;;
-      --default-ref)
-        init_default_ref="${2:-}"
-        shift 2
-        ;;
-      --keep-releases)
-        init_keep_releases="${2:-}"
-        shift 2
-        ;;
-      --deploy-root)
-        init_deploy_root="${2:-}"
-        shift 2
-        ;;
-      --maintenance-file)
-        init_maintenance_file="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown init argument: $1"
-        ;;
-    esac
-  done
+  args_begin init "$@"
+  args_allow_values --repo --docroot --deployment-id --default-ref --keep-releases --deploy-root --maintenance-file
+  arg_value repo --repo
+  arg_value init_docroot --docroot
+  arg_value init_deployment_id --deployment-id
+  arg_value init_default_ref --default-ref
+  arg_value init_keep_releases --keep-releases
+  arg_value init_deploy_root --deploy-root
+  arg_value init_maintenance_file --maintenance-file
+  args_finish
 
   [[ -n "$repo" ]] || die "--repo is required"
   [[ -n "$init_docroot" ]] || die "--docroot is required"
@@ -1299,45 +1467,17 @@ cmd_deploy() {
   local maintenance_file_override=""
 
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --branch)
-        [[ -z "$mode" ]] || die "choose only one ref"
-        mode="branch"
-        value="${2:-}"
-        shift 2
-        ;;
-      --tag)
-        [[ -z "$mode" ]] || die "choose only one ref"
-        mode="tag"
-        value="${2:-}"
-        shift 2
-        ;;
-      --commit)
-        [[ -z "$mode" ]] || die "choose only one ref"
-        mode="commit"
-        value="${2:-}"
-        shift 2
-        ;;
-      --force)
-        force=1
-        shift
-        ;;
-      --post-deploy)
-        post_deploy_override="${2:-}"
-        require_post_deploy_path "$post_deploy_override"
-        shift 2
-        ;;
-      --maintenance-file)
-        maintenance_file_override="${2:-}"
-        require_maintenance_file "$maintenance_file_override"
-        shift 2
-        ;;
-      *)
-        die "unknown deploy argument: $1"
-        ;;
-    esac
-  done
+  args_begin deploy "$@"
+  args_allow_flags --force
+  args_allow_values --branch --tag --commit --post-deploy --maintenance-file
+  arg_flag force --force
+  arg_ref_choice mode value \
+    --branch branch \
+    --tag tag \
+    --commit commit
+  arg_value post_deploy_override --post-deploy require_post_deploy_path
+  arg_value maintenance_file_override --maintenance-file require_maintenance_file
+  args_finish
 
   [[ -n "$mode" && -n "$value" ]] || die "deploy requires --branch, --tag, or --commit"
   deploy_ref "$name" "$mode" "$value" "$force" "$post_deploy_override" "$maintenance_file_override"
@@ -1351,27 +1491,13 @@ cmd_update() {
   local maintenance_file_override=""
 
   require_name "$name"
-  while (($#)); do
-    case "$1" in
-      --force)
-        force=1
-        shift
-        ;;
-      --post-deploy)
-        post_deploy_override="${2:-}"
-        require_post_deploy_path "$post_deploy_override"
-        shift 2
-        ;;
-      --maintenance-file)
-        maintenance_file_override="${2:-}"
-        require_maintenance_file "$maintenance_file_override"
-        shift 2
-        ;;
-      *)
-        die "unknown update argument: $1"
-        ;;
-    esac
-  done
+  args_begin update "$@"
+  args_allow_flags --force
+  args_allow_values --post-deploy --maintenance-file
+  arg_flag force --force
+  arg_value post_deploy_override --post-deploy require_post_deploy_path
+  arg_value maintenance_file_override --maintenance-file require_maintenance_file
+  args_finish
 
   load_config "$name"
   deploy_ref "$name" branch "$default_ref" "$force" "$post_deploy_override" "$maintenance_file_override"
@@ -1384,17 +1510,10 @@ cmd_rollback() {
   local helper
   local current
 
-  while (($#)); do
-    case "$1" in
-      --to)
-        to="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown rollback argument: $1"
-        ;;
-    esac
-  done
+  args_begin rollback "$@"
+  args_allow_values --to
+  arg_value to --to
+  args_finish
 
   load_config "$name"
   helper="$(ensure_helper)"
@@ -1445,21 +1564,14 @@ cmd_branches() {
   shift || true
   local limit=20
   local fetch=0
-  while (($#)); do
-    case "$1" in
-      --fetch)
-        fetch=1
-        shift
-        ;;
-      --limit)
-        limit="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown branches argument: $1"
-        ;;
-    esac
-  done
+
+  args_begin branches "$@"
+  args_allow_flags --fetch
+  args_allow_values --limit
+  arg_flag fetch --fetch
+  arg_value limit --limit
+  args_finish
+
   load_config "$name"
   if ((fetch)); then
     fetch_repo "$name"
@@ -1477,21 +1589,14 @@ cmd_tags() {
   shift || true
   local limit=20
   local fetch=0
-  while (($#)); do
-    case "$1" in
-      --fetch)
-        fetch=1
-        shift
-        ;;
-      --limit)
-        limit="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown tags argument: $1"
-        ;;
-    esac
-  done
+
+  args_begin tags "$@"
+  args_allow_flags --fetch
+  args_allow_values --limit
+  arg_flag fetch --fetch
+  arg_value limit --limit
+  args_finish
+
   load_config "$name"
   if ((fetch)); then
     fetch_repo "$name"
@@ -1507,21 +1612,14 @@ cmd_commits() {
   shift || true
   local limit=20
   local fetch=0
-  while (($#)); do
-    case "$1" in
-      --fetch)
-        fetch=1
-        shift
-        ;;
-      --limit)
-        limit="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "unknown commits argument: $1"
-        ;;
-    esac
-  done
+
+  args_begin commits "$@"
+  args_allow_flags --fetch
+  args_allow_values --limit
+  arg_flag fetch --fetch
+  arg_value limit --limit
+  args_finish
+
   load_config "$name"
   if ((fetch)); then
     fetch_repo "$name"
@@ -2540,73 +2638,38 @@ cmd_remote_deploy() {
   local exchange_helper=""
   local print_claims=0
   local assert_public_symlinks=0
+  local show_help=0
+  local show_help_short=0
+  local show_version=0
 
   # Hidden internal/diagnostic command. The public deploy path calls this in a
   # subshell after rsyncing incoming content so engine exits cannot bypass the
   # outer cleanup paths.
-  while (($#)); do
-    case "$1" in
-      --help|-h)
-        engine_usage
-        exit 0
-        ;;
-      --version)
-        echo "$VERSION"
-        exit 0
-        ;;
-      --docroot)
-        (($# >= 2)) || engine_die "--docroot requires a value"
-        docroot="$2"
-        shift 2
-        ;;
-      --deployment-id)
-        (($# >= 2)) || engine_die "--deployment-id requires a value"
-        deployment_id="$2"
-        shift 2
-        ;;
-      --release-id)
-        (($# >= 2)) || engine_die "--release-id requires a value"
-        release_id="$2"
-        shift 2
-        ;;
-      --rollback-to)
-        (($# >= 2)) || engine_die "--rollback-to requires a value"
-        rollback_to="$2"
-        shift 2
-        ;;
-      --keep-releases)
-        (($# >= 2)) || engine_die "--keep-releases requires a value"
-        keep_releases="$2"
-        shift 2
-        ;;
-      --post-deploy-file)
-        (($# >= 2)) || engine_die "--post-deploy-file requires a value"
-        post_deploy_file="$2"
-        shift 2
-        ;;
-      --maintenance-file)
-        (($# >= 2)) || engine_die "--maintenance-file requires a value"
-        maintenance_file="$2"
-        shift 2
-        ;;
-      --exchange-helper)
-        (($# >= 2)) || engine_die "--exchange-helper requires a value"
-        exchange_helper="$2"
-        shift 2
-        ;;
-      --print-claims)
-        print_claims=1
-        shift
-        ;;
-      --assert-public-symlinks)
-        assert_public_symlinks=1
-        shift
-        ;;
-      *)
-        engine_die "unknown argument: $1"
-        ;;
-    esac
-  done
+  args_begin_with_die engine_die argument "$@"
+  args_allow_flags --help -h --version --print-claims --assert-public-symlinks
+  args_allow_values --docroot --deployment-id --release-id --rollback-to --keep-releases --post-deploy-file --maintenance-file --exchange-helper
+  arg_flag show_help --help
+  arg_flag show_help_short -h
+  arg_flag show_version --version
+  arg_flag print_claims --print-claims
+  arg_flag assert_public_symlinks --assert-public-symlinks
+  arg_value docroot --docroot
+  arg_value deployment_id --deployment-id
+  arg_value release_id --release-id
+  arg_value rollback_to --rollback-to
+  arg_value keep_releases --keep-releases
+  arg_value post_deploy_file --post-deploy-file
+  arg_value maintenance_file --maintenance-file
+  arg_value exchange_helper --exchange-helper
+  if ((show_help || show_help_short)); then
+    engine_usage
+    exit 0
+  fi
+  if ((show_version)); then
+    echo "$VERSION"
+    exit 0
+  fi
+  args_finish
 
   docroot="$(trim "$docroot")"
   deployment_id="$(trim "$deployment_id")"
