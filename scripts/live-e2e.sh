@@ -600,6 +600,7 @@ if timeout 10 wpcloud-site-git-deploy update cli-test --force >/tmp/live-concurr
   exit 1
 fi
 grep -F 'deployment already running' /tmp/live-concurrent-update.err
+test -e /srv/htdocs/.maintenance
 touch "$release"
 wait "$blocking_pid"
 test "$(cat /tmp/live-blocking-update.status)" = "0"

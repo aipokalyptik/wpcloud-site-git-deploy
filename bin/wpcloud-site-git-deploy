@@ -1655,6 +1655,7 @@ create_maintenance_file() {
 
   maintenance_file_enabled "$maintenance_file" || return 0
 
+  ENGINE_MAINTENANCE_OWNED=0
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
   path="$(maintenance_path "$docroot" "$maintenance_file")"
   [[ ! -e "$path" && ! -L "$path" ]] || return 0
@@ -1673,15 +1674,17 @@ create_maintenance_file() {
     printf '// created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$tmp_path"
   mv -T "$tmp_path" "$path"
+  ENGINE_MAINTENANCE_OWNED=1
 }
 
 ENGINE_MAINTENANCE_DOCROOT=""
 ENGINE_MAINTENANCE_DEPLOYMENT_ID=""
 ENGINE_MAINTENANCE_FILE="none"
+ENGINE_MAINTENANCE_OWNED=0
 
 cleanup_engine_exit() {
   cleanup_run_scratch
-  if [[ -n "$ENGINE_MAINTENANCE_DOCROOT" && -n "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" ]]; then
+  if [[ "$ENGINE_MAINTENANCE_OWNED" == "1" && -n "$ENGINE_MAINTENANCE_DOCROOT" && -n "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" ]]; then
     cleanup_owned_maintenance_file \
       "$ENGINE_MAINTENANCE_DOCROOT" \
       "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" \
@@ -2517,6 +2520,7 @@ rollback_release() {
   prepare_claim_transition "$docroot" "$deployment_id" "$base" "$release_dir" "$scratch_dir"
   apply_claim_transition "$docroot" "$deployment_id" "$base" "$rollback_to" "$exchange_helper" "$scratch_dir"
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+  ENGINE_MAINTENANCE_OWNED=0
 
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$rollback_to" >&2
 }
@@ -2627,6 +2631,7 @@ cmd_remote_deploy() {
   ENGINE_MAINTENANCE_DOCROOT="$docroot"
   ENGINE_MAINTENANCE_DEPLOYMENT_ID="$deployment_id"
   ENGINE_MAINTENANCE_FILE="$maintenance_file"
+  ENGINE_MAINTENANCE_OWNED=0
   trap cleanup_engine_exit EXIT
   require_remote_capabilities
 
@@ -2700,9 +2705,11 @@ cmd_remote_deploy() {
   apply_claim_transition "$docroot" "$deployment_id" "$base" "$release_id" "$exchange_helper" "$scratch_dir"
   if ! run_post_deploy "$docroot" "$post_deploy_file"; then
     cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+    ENGINE_MAINTENANCE_OWNED=0
     engine_die "post-deploy failed: $post_deploy_file"
   fi
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+  ENGINE_MAINTENANCE_OWNED=0
   prune_releases "$releases_dir" "$keep_releases" "$release_id"
 
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$release_id" >&2

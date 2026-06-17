@@ -382,6 +382,7 @@ cleared_runs_before="$(wc -l <"$post_marker" | tr -d ' ')"
 HOME="$home_dir" "$cli" update site --force >/dev/null
 cleared_runs_after="$(wc -l <"$post_marker" | tr -d ' ')"
 [[ "$cleared_runs_after" == "$cleared_runs_before" ]] || fail "cleared post-deploy config should stop automatic hook execution"
+HOME="$home_dir" "$cli" config site --maintenance-file .maintenance >/dev/null
 
 blocking_hook="$tmpdir/blocking-post-deploy.sh"
 blocking_ready="$tmpdir/blocking-ready"
@@ -421,6 +422,7 @@ if HOME="$home_dir" timeout 5 "$cli" update site --force >"$tmpdir/concurrent-up
   fail "concurrent deployment should fail while another deployment is running"
 fi
 assert_contains "deployment already running" "$tmpdir/concurrent-update.err"
+[[ -e "$docroot/.maintenance" ]] || fail "concurrent failed deployment should not remove active maintenance file"
 touch "$blocking_release"
 wait "$blocking_pid"
 blocking_status="$(cat "$tmpdir/blocking-update.status")"
