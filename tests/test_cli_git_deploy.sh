@@ -129,6 +129,25 @@ awk '
   END { exit state == 10 ? 0 : 1 }
 ' "$cli" || fail "script sections should be documented and ordered consistently"
 awk '
+  /^[A-Za-z_][A-Za-z0-9_]*\(\) \{/ {
+    in_function=1
+    next
+  }
+  /^\}/ {
+    in_function=0
+    next
+  }
+  !in_function && /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(\) \{/ {
+    printf "indented top-level function at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  !in_function && FNR != 1 && /^[[:space:]]+#/ {
+    printf "indented top-level comment at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  END { exit found ? 1 : 0 }
+' "$cli" || fail "top-level functions and comments should start at column 0"
+awk '
   /^# Runtime, Git, And Repository Helpers/ { in_runtime=1 }
   /^# Deploy Orchestration And Release Metadata/ { exit seen_repo_dir ? 0 : 1 }
   in_runtime && /^repo_dir_for\(\) \{/ { seen_repo_dir=1 }
