@@ -85,9 +85,23 @@ assert_not_contains "args_register_value" "$cli"
 assert_not_contains "doctor_ok()" "$cli"
 assert_not_contains "doctor_warn()" "$cli"
 assert_not_contains "doctor_fail()" "$cli"
+if grep -Eq '^require_id\(\) \{' "$cli"; then
+  fail "require_id should be inlined"
+fi
+assert_not_contains "shell_quote()" "$cli"
+assert_not_contains "args_begin()" "$cli"
+assert_not_contains "args_die()" "$cli"
+assert_not_contains "arg_get()" "$cli"
+assert_not_contains "repo_url_supports_auth()" "$cli"
+assert_not_contains "private_key_mode()" "$cli"
+assert_not_contains "require_ssh_keygen_for_keys()" "$cli"
+assert_not_contains "same_file()" "$cli"
+assert_not_contains "resolve_path()" "$cli"
+assert_not_contains "maintenance_file_enabled()" "$cli"
+assert_not_contains "maintenance_path()" "$cli"
+assert_not_contains "claims_overlap()" "$cli"
 assert_contains "arg_has --offline" "$cli"
 assert_contains "arg_set repo --repo" "$cli"
-assert_contains "arg_get()" "$cli"
 for section in \
   "Global State And Constants" \
   "Common CLI Helpers" \

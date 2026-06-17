@@ -37,9 +37,9 @@ KEYS_DIR="$STATE_DIR/keys"
 # Fallback helper path when running directly from a source checkout.
 HELPER_SOURCE="$REPO_ROOT/helpers/bin/linux-amd64/exchange-rename"
 
-# Shared parser state for the currently executing command. args_begin resets
-# these variables so cmd_* handlers can read named options without carrying a
-# bespoke while/case parser in every function.
+# Shared parser state for the currently executing command. args_begin_with_die
+# resets these variables so cmd_* handlers can read named options without
+# carrying a bespoke while/case parser in every function.
 ARGS_COMMAND=""
 ARGS_DIE_FUNC="die"
 ARGS=()
@@ -84,14 +84,6 @@ require_name() {
   [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || die "deployment name must contain only letters, numbers, dot, underscore, or dash"
 }
 
-require_id() {
-  [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "deployment-id must be a normalized id"
-}
-
-shell_quote() {
-  printf '%q' "$1"
-}
-
 config_dir() {
   local name="$1"
   printf '%s/%s\n' "$DEPLOYMENTS_DIR" "$name"
@@ -120,18 +112,6 @@ args_begin_with_die() {
   ARGS=("$@")
   ARGS_FLAGS=()
   ARGS_VALUES=()
-}
-
-# Starts parsing a public command and resets all parser state from any prior
-# command invocation.
-args_begin() {
-  args_begin_with_die die "$@"
-}
-
-# Routes parser failures through either die or engine_die, depending on the
-# current command context.
-args_die() {
-  "$ARGS_DIE_FUNC" "$1"
 }
 
 args_is_registered_flag() {
@@ -174,7 +154,7 @@ args_finish() {
     fi
     if args_is_registered_value "$arg"; then
       if ((index + 1 >= ${#ARGS[@]})) || [[ "${ARGS[$((index + 1))]}" == --* ]]; then
-        args_die "$arg requires a value"
+        "$ARGS_DIE_FUNC" "$arg requires a value"
       fi
       index=$((index + 2))
       continue
@@ -185,7 +165,7 @@ args_finish() {
     else
       unknown_message="unknown ${ARGS_COMMAND} argument: $option"
     fi
-    args_die "$unknown_message"
+    "$ARGS_DIE_FUNC" "$unknown_message"
   done
 }
 
@@ -218,14 +198,14 @@ arg_read_value_count() {
     arg="${ARGS[$index]}"
     if [[ "$arg" == "$key" ]]; then
       value_index=$((index + 1))
-      ((value_index < ${#ARGS[@]})) || args_die "$key requires a value"
+      ((value_index < ${#ARGS[@]})) || "$ARGS_DIE_FUNC" "$key requires a value"
       arg_parsed_value="${ARGS[$value_index]}"
-      [[ "$arg_parsed_value" != --* ]] || args_die "$key requires a value"
+      [[ "$arg_parsed_value" != --* ]] || "$ARGS_DIE_FUNC" "$key requires a value"
       printf -v "$dest" '%s' "$arg_parsed_value"
       arg_parsed_count=$((arg_parsed_count + 1))
     elif [[ "$arg" == "$key="* ]]; then
       arg_parsed_value="${arg#*=}"
-      [[ -n "$arg_parsed_value" || -n "$validator" ]] || args_die "$key requires a value"
+      [[ -n "$arg_parsed_value" || -n "$validator" ]] || "$ARGS_DIE_FUNC" "$key requires a value"
       printf -v "$dest" '%s' "$arg_parsed_value"
       arg_parsed_count=$((arg_parsed_count + 1))
     fi
@@ -235,20 +215,6 @@ arg_read_value_count() {
     "$validator" "${!dest}"
   fi
   printf -v "$count_dest" '%s' "$arg_parsed_count"
-}
-
-# Echoes a value option and returns true when it was present. Use this directly
-# in conditionals when the caller does not need to retain the value in a
-# variable.
-arg_get() {
-  local key="$1"
-  local validator="${2:-}"
-  local value=""
-  local parsed_count
-
-  arg_read_value_count value parsed_count "$key" "$validator"
-  ((parsed_count > 0)) || return 1
-  printf '%s\n' "$value"
 }
 
 # Assigns a value option to a named variable. This avoids command-substitution
@@ -286,7 +252,7 @@ arg_ref_choice() {
     parsed_value=""
     arg_read_value_count parsed_value parsed_count "$option_name"
     if ((parsed_count > 0)); then
-      ((found == 0 && parsed_count == 1)) || args_die "choose only one ref"
+      ((found == 0 && parsed_count == 1)) || "$ARGS_DIE_FUNC" "choose only one ref"
       printf -v "$mode_dest" '%s' "$mode_name"
       printf -v "$value_dest" '%s' "$parsed_value"
       found=$((found + parsed_count))
@@ -334,8 +300,8 @@ arg_one_action() {
     fi
   done
 
-  ((action_count > 0)) || args_die "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
-  ((action_count == 1)) || args_die "choose only one config option"
+  ((action_count > 0)) || "$ARGS_DIE_FUNC" "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
+  ((action_count == 1)) || "$ARGS_DIE_FUNC" "choose only one config option"
 }
 
 # Deployment Config And State
@@ -534,11 +500,13 @@ require_deploy_root() {
 git_ssh_command() {
   local key_path="${ssh_key_path:-}"
   local command
+  local quoted_key_path
 
   [[ -n "$key_path" ]] || return 1
 
   # -i pins Git to the deployment-specific private key from config.
-  command="ssh -i $(shell_quote "$key_path")"
+  printf -v quoted_key_path '%q' "$key_path"
+  command="ssh -i $quoted_key_path"
   # IdentitiesOnly prevents ssh-agent or default keys from changing which
   # repository identity Git presents.
   command+=" -o IdentitiesOnly=yes"
@@ -1056,36 +1024,20 @@ https_to_ssh() {
   printf 'git@%s:%s\n' "$host" "$path"
 }
 
-repo_url_supports_auth() {
-  local url="$1"
-
-  [[ "$url" =~ ^[^@:/]+@[^:/]+:.+$ || "$url" =~ ^ssh://[^@]+@[^/]+/.+$ ]]
-}
-
-private_key_mode() {
-  local path="$1"
-
-  stat -c '%a' "$path"
-}
-
 private_key_public_key() {
   local path="$1"
 
   ssh-keygen -y -f "$path" </dev/null 2>/dev/null
 }
 
-require_ssh_keygen_for_keys() {
-  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
-}
-
 validate_existing_private_key() {
   local path="$1"
   local mode
 
-  require_ssh_keygen_for_keys
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
   [[ -f "$path" ]] || die "private key is missing: $path"
   [[ -r "$path" ]] || die "private key is not readable: $path"
-  mode="$(private_key_mode "$path")"
+  mode="$(stat -c '%a' "$path")"
   if (( (8#$mode) & 0077 )); then
     die "private key permissions are too open: $mode"
   fi
@@ -1097,7 +1049,7 @@ derive_public_key_file() {
   local public_key_path="$2"
   local tmp
 
-  require_ssh_keygen_for_keys
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
   tmp="$(mktemp "${public_key_path}.tmp.XXXXXX")"
   if ! private_key_public_key "$private_key" >"$tmp"; then
     rm -f "$tmp"
@@ -1105,14 +1057,6 @@ derive_public_key_file() {
   fi
   mv "$tmp" "$public_key_path"
   chmod 644 "$public_key_path"
-}
-
-same_file() {
-  local left="$1"
-  local right="$2"
-
-  [[ -e "$left" && -e "$right" ]] || return 1
-  [[ "$(cd "$(dirname "$left")" && pwd -P)/$(basename "$left")" == "$(cd "$(dirname "$right")" && pwd -P)/$(basename "$right")" ]]
 }
 
 # Public Command Handlers
@@ -1133,11 +1077,13 @@ cmd_auth() {
   local import_key=""
   local host
   local public_key
+  local import_key_real
+  local key_path_real
 
   # Configure exactly one deploy key source for this deployment: generated
   # managed key, external key path, imported managed copy, or removal.
   require_name "$name"
-  args_begin auth "$@"
+  args_begin_with_die die auth "$@"
   arg_has --force-new-key && force_new_key=1
   arg_has --verify && verify=1
   arg_has --remove && remove=1
@@ -1183,7 +1129,8 @@ cmd_auth() {
   if [[ "$repo_url" =~ ^https:// ]]; then
     repo_url="$(https_to_ssh "$repo_url")" || die "could not convert HTTPS URL to SSH"
   fi
-  repo_url_supports_auth "$repo_url" || die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
+  [[ "$repo_url" =~ ^[^@:/]+@[^:/]+:.+$ || "$repo_url" =~ ^ssh://[^@]+@[^/]+/.+$ ]] ||
+    die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
 
   key_path="$KEYS_DIR/${name}_ed25519"
   if [[ -n "$use_key" ]]; then
@@ -1193,7 +1140,14 @@ cmd_auth() {
     printf 'Using existing deploy key: %s\n' "$key_path"
   elif [[ -n "$import_key" ]]; then
     validate_existing_private_key "$import_key"
-    if same_file "$import_key" "$key_path"; then
+    if [[ -e "$import_key" && -e "$key_path" ]]; then
+      import_key_real="$(cd "$(dirname "$import_key")" && pwd -P)/$(basename "$import_key")"
+      key_path_real="$(cd "$(dirname "$key_path")" && pwd -P)/$(basename "$key_path")"
+    else
+      import_key_real=""
+      key_path_real=""
+    fi
+    if [[ -n "$import_key_real" && "$import_key_real" == "$key_path_real" ]]; then
       die "cannot import the managed deploy key onto itself: $key_path"
     fi
     if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
@@ -1263,7 +1217,7 @@ cmd_doctor() {
   # Report every setup problem found instead of failing on the first one so a
   # first-time user gets a complete repair checklist.
   require_name "$name"
-  args_begin doctor "$@"
+  args_begin_with_die die doctor "$@"
   arg_has --offline && offline=1
   args_finish
 
@@ -1325,7 +1279,7 @@ cmd_doctor() {
     printf 'FAIL ssh-key: private key is not readable: %s\n' "$ssh_key_path"
     doctor_failures=$((doctor_failures + 1))
   else
-    mode="$(private_key_mode "$ssh_key_path")"
+    mode="$(stat -c '%a' "$ssh_key_path")"
     if (( (8#$mode) & 0077 )); then
       printf 'FAIL ssh-key: private key permissions are too open: %s\n' "$mode"
       doctor_failures=$((doctor_failures + 1))
@@ -1381,7 +1335,7 @@ cmd_config() {
   local action_value=""
 
   require_name "$name"
-  args_begin config "$@"
+  args_begin_with_die die config "$@"
   arg_one_action action action_value \
     --deploy-root set-deploy-root require_deploy_root \
     --clear-deploy-root clear-deploy-root - \
@@ -1432,7 +1386,7 @@ cmd_init() {
   local init_maintenance_file="$DEFAULT_MAINTENANCE_FILE"
 
   require_name "$name"
-  args_begin init "$@"
+  args_begin_with_die die init "$@"
   arg_set repo --repo
   arg_set init_docroot --docroot
   arg_set init_deployment_id --deployment-id
@@ -1446,7 +1400,7 @@ cmd_init() {
   [[ -n "$init_docroot" ]] || die "--docroot is required"
   [[ -n "$init_deployment_id" ]] || die "--deployment-id is required"
   [[ -n "$init_default_ref" ]] || die "--default-ref is required"
-  require_id "$init_deployment_id"
+  [[ "$init_deployment_id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "deployment-id must be a normalized id"
   [[ "$init_keep_releases" =~ ^[0-9]+$ && "$init_keep_releases" -ge 1 ]] || die "--keep-releases must be a positive integer"
   if [[ -n "$init_deploy_root" ]]; then
     require_deploy_root "$init_deploy_root"
@@ -1477,7 +1431,7 @@ cmd_deploy() {
   local maintenance_file_override=""
 
   require_name "$name"
-  args_begin deploy "$@"
+  args_begin_with_die die deploy "$@"
   arg_has --force && force=1
   arg_ref_choice mode value \
     --branch branch \
@@ -1499,7 +1453,7 @@ cmd_update() {
   local maintenance_file_override=""
 
   require_name "$name"
-  args_begin update "$@"
+  args_begin_with_die die update "$@"
   arg_has --force && force=1
   arg_set post_deploy_override --post-deploy require_post_deploy_path
   arg_set maintenance_file_override --maintenance-file require_maintenance_file
@@ -1516,7 +1470,7 @@ cmd_rollback() {
   local helper
   local current
 
-  args_begin rollback "$@"
+  args_begin_with_die die rollback "$@"
   arg_set to --to
   args_finish
 
@@ -1570,7 +1524,7 @@ cmd_branches() {
   local limit=20
   local fetch=0
 
-  args_begin branches "$@"
+  args_begin_with_die die branches "$@"
   arg_has --fetch && fetch=1
   arg_set limit --limit
   args_finish
@@ -1593,7 +1547,7 @@ cmd_tags() {
   local limit=20
   local fetch=0
 
-  args_begin tags "$@"
+  args_begin_with_die die tags "$@"
   arg_has --fetch && fetch=1
   arg_set limit --limit
   args_finish
@@ -1614,7 +1568,7 @@ cmd_commits() {
   local limit=20
   local fetch=0
 
-  args_begin commits "$@"
+  args_begin_with_die die commits "$@"
   arg_has --fetch && fetch=1
   arg_set limit --limit
   args_finish
@@ -1708,19 +1662,6 @@ cleanup_run_scratch() {
   fi
 }
 
-maintenance_file_enabled() {
-  local maintenance_file="$1"
-
-  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]]
-}
-
-maintenance_path() {
-  local docroot="$1"
-  local maintenance_file="$2"
-
-  printf '%s/%s\n' "$docroot" "$maintenance_file"
-}
-
 maintenance_file_is_tool_owned() {
   local path="$1"
   local deployment_id="$2"
@@ -1742,8 +1683,8 @@ cleanup_owned_maintenance_file() {
   local maintenance_file="$3"
   local path
 
-  maintenance_file_enabled "$maintenance_file" || return 0
-  path="$(maintenance_path "$docroot" "$maintenance_file")"
+  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]] || return 0
+  path="$docroot/$maintenance_file"
   if maintenance_file_is_tool_owned "$path" "$deployment_id"; then
     rm -f -- "$path"
   fi
@@ -1758,11 +1699,11 @@ create_maintenance_file() {
   local parent
   local tmp_path
 
-  maintenance_file_enabled "$maintenance_file" || return 0
+  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]] || return 0
 
   ENGINE_MAINTENANCE_OWNED=0
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
-  path="$(maintenance_path "$docroot" "$maintenance_file")"
+  path="$docroot/$maintenance_file"
   [[ ! -e "$path" && ! -L "$path" ]] || return 0
 
   parent="${path%/*}"
@@ -1875,12 +1816,6 @@ assert_public_symlinks_under_docroot() {
   rm -f -- "$links_tmp"
 }
 
-resolve_path() {
-  local path="$1"
-
-  readlink -f "$path"
-}
-
 assert_claim_symlinks_under_docroot() {
   local docroot="$1"
   local claims_file="$2"
@@ -1891,7 +1826,7 @@ assert_claim_symlinks_under_docroot() {
   local resolved
   local home_value="${HOME:-}"
 
-  docroot_real="$(resolve_path "$docroot")" || engine_die "docroot does not exist: $docroot"
+  docroot_real="$(readlink -f "$docroot")" || engine_die "docroot does not exist: $docroot"
 
   while IFS= read -r claim || [[ -n "$claim" ]]; do
     [[ -n "$claim" ]] || continue
@@ -1905,7 +1840,7 @@ assert_claim_symlinks_under_docroot() {
       engine_die "public symlink target contains HOME: $claim"
     fi
 
-    resolved="$(resolve_path "$public_path")" || engine_die "public symlink resolves outside docroot: $claim"
+    resolved="$(readlink -f "$public_path")" || engine_die "public symlink resolves outside docroot: $claim"
     case "$resolved" in
       "$docroot_real"/*)
         ;;
@@ -2197,13 +2132,6 @@ cleanup_removed_claims() {
   done <"$removed_claims_file"
 }
 
-claims_overlap() {
-  local left="$1"
-  local right="$2"
-
-  [[ "$left" == "$right" || "$left" == "$right/"* || "$right" == "$left/"* ]]
-}
-
 cleanup_overlapping_removed_claims() {
   local docroot="$1"
   local deployment_id="$2"
@@ -2218,7 +2146,7 @@ cleanup_overlapping_removed_claims() {
     while IFS= read -r new_claim || [[ -n "$new_claim" ]]; do
       [[ -n "$new_claim" ]] || continue
 
-      if claims_overlap "$removed_claim" "$new_claim"; then
+      if [[ "$removed_claim" == "$new_claim" || "$removed_claim" == "$new_claim/"* || "$new_claim" == "$removed_claim/"* ]]; then
         remove_exact_claim_symlink "$docroot" "$deployment_id" "$removed_claim"
         break
       fi
