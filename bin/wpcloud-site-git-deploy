@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Global State And Constants
+#
+# Version, default settings, filesystem locations, and shared mutable parser
+# state used by the single-file CLI.
+
 readonly VERSION="1.1.4"
 # Default number of promoted docroot releases retained for rollback.
 readonly DEFAULT_KEEP_RELEASES="3"
@@ -41,7 +46,10 @@ ARGS=()
 ARGS_FLAGS=()
 ARGS_VALUES=()
 
-# Common CLI helpers
+# Common CLI Helpers
+#
+# Small, command-agnostic utilities for usage output, fatal errors, identifier
+# validation, shell quoting, and shared docroot/state path construction.
 
 usage() {
   cat <<-'USAGE'
@@ -96,7 +104,7 @@ docroot_deployment_base() {
   printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
 }
 
-# Command argument helpers
+# Command Argument Helpers
 #
 # The helpers below register the option names that a command reads, then
 # args_finish validates the original argv stream against those registered flag
@@ -349,7 +357,10 @@ arg_one_action() {
   ((action_count == 1)) || args_die "choose only one config option"
 }
 
-# Deployment config and state
+# Deployment Config And State
+#
+# Read and write the one-value-per-file deployment configuration, validate
+# configurable paths, and create the tool-owned state directories.
 
 config_value_path() {
   local name="$1"
@@ -534,7 +545,10 @@ require_deploy_root() {
   done
 }
 
-# Git and repository helpers
+# Runtime, Git, And Repository Helpers
+#
+# Runtime capability helpers, exchange-rename discovery, Git authentication
+# wrappers, exclude generation, repository cache fetching, and worktree prep.
 
 git_ssh_command() {
   local key_path="${ssh_key_path:-}"
@@ -626,7 +640,10 @@ default_exclude_file() {
   } >"$output"
 }
 
-# Release metadata and deploy orchestration
+# Deploy Orchestration And Release Metadata
+#
+# Release id generation, incoming release creation, metadata value files,
+# no-op checks, promotion calls, cleanup, and rollback candidate selection.
 
 repo_dir_for() {
   local name="$1"
@@ -1017,6 +1034,11 @@ select_rollback_release() {
     xargs basename
 }
 
+# Auth And Doctor Helpers
+#
+# Repository URL parsing, deploy-key validation/import support, and diagnostic
+# output helpers used by the auth and doctor public commands.
+
 repo_host_from_url() {
   local url="$1"
 
@@ -1127,7 +1149,11 @@ doctor_fail() {
   doctor_failures=$((doctor_failures + 1))
 }
 
-# Public command handlers
+# Public Command Handlers
+#
+# User-facing command implementations. These functions parse command-specific
+# arguments with the argument helpers, load config as needed, and call the
+# lower-level runtime/deploy helpers.
 
 cmd_auth() {
   local name="${1:-}"
@@ -1638,7 +1664,11 @@ cmd_status() {
   printf 'current=%s\n' "$(current_release_id || true)"
 }
 
-# Internal promotion engine
+# Internal Promotion Engine
+#
+# Hidden __remote-deploy implementation that runs on the site host to reconcile
+# claims, switch current releases, manage maintenance markers, run post-deploy
+# hooks, rollback, prune releases, and audit public symlink invariants.
 
 engine_usage() {
   cat <<-'USAGE'
@@ -2774,7 +2804,10 @@ cmd_remote_deploy() {
   echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$release_id" >&2
 }
 
-# Final command dispatcher
+# Final Command Dispatcher
+#
+# Top-level command router. Keep this last so all public and hidden command
+# handlers are defined before dispatch.
 
 main() {
   local command="${1:-}"

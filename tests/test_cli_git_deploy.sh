@@ -83,6 +83,32 @@ assert_not_contains "args_allow_values" "$cli"
 assert_contains "arg_has --offline" "$cli"
 assert_contains "arg_set repo --repo" "$cli"
 assert_contains "arg_get()" "$cli"
+for section in \
+  "Global State And Constants" \
+  "Common CLI Helpers" \
+  "Command Argument Helpers" \
+  "Deployment Config And State" \
+  "Runtime, Git, And Repository Helpers" \
+  "Deploy Orchestration And Release Metadata" \
+  "Auth And Doctor Helpers" \
+  "Public Command Handlers" \
+  "Internal Promotion Engine" \
+  "Final Command Dispatcher"; do
+  assert_contains "# ${section}" "$cli"
+done
+awk '
+  /^# Global State And Constants/ { state=1 }
+  /^# Common CLI Helpers/ { if (state != 1) exit 1; state=2 }
+  /^# Command Argument Helpers/ { if (state != 2) exit 1; state=3 }
+  /^# Deployment Config And State/ { if (state != 3) exit 1; state=4 }
+  /^# Runtime, Git, And Repository Helpers/ { if (state != 4) exit 1; state=5 }
+  /^# Deploy Orchestration And Release Metadata/ { if (state != 5) exit 1; state=6 }
+  /^# Auth And Doctor Helpers/ { if (state != 6) exit 1; state=7 }
+  /^# Public Command Handlers/ { if (state != 7) exit 1; state=8 }
+  /^# Internal Promotion Engine/ { if (state != 8) exit 1; state=9 }
+  /^# Final Command Dispatcher/ { if (state != 9) exit 1; state=10 }
+  END { exit state == 10 ? 0 : 1 }
+' "$cli" || fail "script sections should be documented and ordered consistently"
 awk '
   /^cmd_[A-Za-z0-9_]+\(\) \{/ {
     in_cmd=1
