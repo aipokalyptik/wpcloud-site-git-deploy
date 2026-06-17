@@ -281,9 +281,22 @@ incoming release, promoted release, metadata file, or pruning pass.
 - Public symlink targets must not contain `$HOME`.
 - Root/group-owned non-writable anchors are protected from deploy claims.
 - Sticky root/group-owned writable directories act as dynamic boundaries, which keeps WordPress plugin/theme deployments from claiming too broad a path.
-- WordPress shared paths are rejected if present in the deployable tree:
-  `wp-content/uploads`, `wp-content/cache`, `wp-content/upgrade`,
-  `wp-content/blogs.dir`, and `.maintenance`.
+- WordPress media containers are treated specially. Regular files under
+  `wp-content/uploads` and `wp-content/blogs.dir` deploy as individual leaf
+  symlinks, but the tool never claims or replaces those directories themselves.
+  WordPress also creates, deletes, and reorganizes files under those trees at
+  runtime, so this keeps deploy-managed files from taking ownership of sibling
+  uploads or multisite media.
+- Repo symlinks under `wp-content/uploads` and `wp-content/blogs.dir` are
+  rejected. A symlink can behave like a directory or point somewhere unexpected,
+  which would undermine the "regular files only, never directories" rule for
+  WordPress-managed media containers.
+- WordPress runtime/control paths remain fully rejected if present in the
+  deployable tree: `wp-content/cache`, `wp-content/upgrade`, and
+  `.maintenance`.
+- Example: `wp-content/uploads/static/logo.png` is allowed as a regular file;
+  `wp-content/uploads/static-link` is rejected when it is a repo symlink; and
+  `wp-content/cache/object-cache.bin` is always rejected.
 - The tool removes only maintenance files containing its own marker for the
   configured deployment. Pre-existing or manually created maintenance files are
   preserved.

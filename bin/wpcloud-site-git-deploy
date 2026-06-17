@@ -10,8 +10,11 @@ readonly DEFAULT_MAINTENANCE_FILE=".maintenance"
 readonly DOCROOT_NAMESPACE=".wpcloud-site-git-deploy"
 readonly DOCROOT_NAMESPACE_SUFFIX="${DOCROOT_NAMESPACE#.}"
 readonly DOCROOT_NAMESPACE_REGEX="\\.wpcloud-site-git-deploy"
-# WordPress-managed persistent paths should never be claimed by a Git deploy.
-readonly -a DEFAULT_SHARED_PATHS=(wp-content/uploads wp-content/cache wp-content/upgrade wp-content/blogs.dir .maintenance)
+# WordPress-managed runtime paths that should never be claimed by a Git deploy.
+readonly -a REJECTED_SHARED_PATHS=(wp-content/cache wp-content/upgrade .maintenance)
+# Persistent media containers may hold deploy-managed regular-file leaf symlinks,
+# but the containers themselves remain owned by WordPress.
+readonly -a SHARED_CONTAINER_PATHS=(wp-content/uploads wp-content/blogs.dir)
 # Metadata keys written for each successful release and accepted by the
 # non-executing metadata reader.
 readonly -a RELEASE_METADATA_KEYS=(release_id ref_mode ref_value commit deploy_root deployed_at)
@@ -2326,12 +2329,25 @@ claim_for_path() {
   printf '%s\n' "${public_path%%/*}"
 }
 
-shared_path_for_public_path() {
+rejected_shared_path_for_public_path() {
   local public_path="$1"
   local shared_path
 
-  for shared_path in "${DEFAULT_SHARED_PATHS[@]}"; do
+  for shared_path in "${REJECTED_SHARED_PATHS[@]}"; do
     if [[ "$public_path" == "$shared_path" || "$public_path" == "$shared_path/"* ]]; then
+      printf '%s\n' "$shared_path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+shared_container_for_public_path() {
+  local public_path="$1"
+  local shared_path
+
+  for shared_path in "${SHARED_CONTAINER_PATHS[@]}"; do
+    if [[ "$public_path" == "$shared_path/"* ]]; then
       printf '%s\n' "$shared_path"
       return 0
     fi
@@ -2378,9 +2394,17 @@ compute_claims() {
         continue
         ;;
     esac
-    if [[ "$reject_shared_paths" == "1" ]] && shared_path="$(shared_path_for_public_path "$public_path")"; then
+    if [[ "$reject_shared_paths" == "1" ]] && shared_path="$(rejected_shared_path_for_public_path "$public_path")"; then
       rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
       engine_die "shared path cannot be deployed: $shared_path"
+    fi
+    if shared_path="$(shared_container_for_public_path "$public_path")"; then
+      if [[ "$reject_shared_paths" == "1" && -L "$release_file" ]]; then
+        rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
+        engine_die "shared container symlink cannot be deployed: $public_path"
+      fi
+      printf '%s\n' "$public_path"
+      continue
     fi
 
     claim_for_path "$public_path" "$boundaries_file"

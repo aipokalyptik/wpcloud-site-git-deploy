@@ -67,7 +67,7 @@ flowchart TD
   EPCT1 --> EPCT2["discover_protected_anchors"]
   EPCT2 --> EPCT3["compute old claims + materialized public claims"]
   EPCT3 --> EPCT4["compute new claims"]
-  EPCT4 --> EPCT5["reject shared paths and protected anchors"]
+  EPCT4 --> EPCT5["apply shared media container policy; reject runtime shared paths and protected anchors"]
   EPCT5 --> EPCT6["compute removed claims"]
   EPCT6 --> MOVE["Move incoming to releases/<release-id>"]
   MOVE --> EACT["apply_claim_transition"]

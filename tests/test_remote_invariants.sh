@@ -142,8 +142,71 @@ assert_shared_path_fails() {
   [[ "$(readlink "$shared_base/current")" == "releases/release-one" ]] || fail "shared path rejection should leave current unchanged"
 }
 
-assert_shared_path_fails uploads "wp-content/uploads/file.jpg" "wp-content/uploads"
+assert_shared_path_fails cache "wp-content/cache/object-cache.bin" "wp-content/cache"
+assert_shared_path_fails upgrade "wp-content/upgrade/package.tmp" "wp-content/upgrade"
 assert_shared_path_fails maintenance ".maintenance" ".maintenance"
+
+assert_shared_container_file_deploys() {
+  local name="$1"
+  local shared_path="$2"
+  local shared_docroot="$tmpdir/$name-docroot"
+  local shared_base="$shared_docroot/.wpcloud-site-git-deploy/deployments/site"
+  local first_incoming="$shared_base/incoming/release-one"
+  local second_incoming="$shared_base/incoming/release-two"
+  local parent_dir="$shared_docroot/${shared_path%/*}"
+
+  mkdir -p "$first_incoming/$(dirname "$shared_path")"
+  printf 'shared file\n' >"$first_incoming/$shared_path"
+  "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+
+  [[ -d "$parent_dir" ]] || fail "shared container parent should be a real directory: ${shared_path%/*}"
+  [[ -L "$shared_docroot/$shared_path" ]] || fail "shared container file should be a leaf symlink: $shared_path"
+  grep -Fx 'shared file' "$shared_docroot/$shared_path" >/dev/null || fail "shared container file should resolve to deployed content: $shared_path"
+  case "$(readlink "$shared_docroot/$shared_path")" in
+    *".wpcloud-site-git-deploy/deployments/site/current/$shared_path")
+      ;;
+    *)
+      fail "shared container leaf symlink should point at exact release path: $shared_path"
+      ;;
+  esac
+
+  mkdir -p "$second_incoming"
+  printf 'ok\n' >"$second_incoming/index.html"
+  "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-two --keep-releases 2 >/dev/null
+
+  [[ -d "$parent_dir" ]] || fail "shared container parent directory should remain after file removal: ${shared_path%/*}"
+  [[ ! -e "$shared_docroot/$shared_path" && ! -L "$shared_docroot/$shared_path" ]] || fail "removed shared container file symlink should be removed: $shared_path"
+}
+
+assert_shared_container_file_deploys uploads-leaf "wp-content/uploads/file.jpg"
+assert_shared_container_file_deploys uploads-nested "wp-content/uploads/2026/06/file.jpg"
+assert_shared_container_file_deploys blogs-dir "wp-content/blogs.dir/1/files/file.jpg"
+
+assert_shared_container_symlink_fails() {
+  local name="$1"
+  local shared_path="$2"
+  local expected_path="$3"
+  local shared_docroot="$tmpdir/$name-docroot"
+  local shared_base="$shared_docroot/.wpcloud-site-git-deploy/deployments/site"
+  local initial_incoming="$shared_base/incoming/release-one"
+  local bad_incoming="$shared_base/incoming/release-two"
+
+  mkdir -p "$initial_incoming"
+  printf 'ok\n' >"$initial_incoming/index.html"
+  "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+
+  mkdir -p "$bad_incoming/$(dirname "$shared_path")"
+  printf 'target\n' >"$bad_incoming/target.txt"
+  ln -s ../../target.txt "$bad_incoming/$shared_path"
+  if "${remote[@]}" --docroot "$shared_docroot" --deployment-id site --release-id release-two --keep-releases 2 >/dev/null 2>"$tmpdir/$name-shared-symlink.log"; then
+    fail "shared container symlink $shared_path should be rejected"
+  fi
+  grep -Fq -- "shared container symlink cannot be deployed: $expected_path" "$tmpdir/$name-shared-symlink.log" || fail "unexpected shared container symlink rejection for $shared_path"
+  [[ "$(readlink "$shared_base/current")" == "releases/release-one" ]] || fail "shared container symlink rejection should leave current unchanged"
+}
+
+assert_shared_container_symlink_fails uploads-symlink "wp-content/uploads/static-link" "wp-content/uploads/static-link"
+assert_shared_container_symlink_fails blogs-symlink "wp-content/blogs.dir/1/files/static-link" "wp-content/blogs.dir/1/files/static-link"
 
 maintenance_docroot="$tmpdir/tool-maintenance-docroot"
 maintenance_base="$maintenance_docroot/.wpcloud-site-git-deploy/deployments/site"

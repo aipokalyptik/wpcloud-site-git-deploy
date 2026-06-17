@@ -107,9 +107,11 @@ Current live coverage includes:
 - File-to-directory and directory-to-file swaps.
 - Symlink deploy.
 - Git LFS add and remove.
-- Shared WordPress path rejection for `wp-content/uploads`,
-  `wp-content/cache`, `wp-content/upgrade`, `wp-content/blogs.dir`, and
-  `.maintenance`.
+- Shared media container leaf-file deploys under `wp-content/uploads` and
+  `wp-content/blogs.dir`, including cleanup that removes only the owned leaf
+  symlink and leaves parent directories intact.
+- Shared runtime/control path rejection for `wp-content/cache`,
+  `wp-content/upgrade`, and `.maintenance`.
 - Public submodule add and remove.
 - Private submodule failure, followed by recovery after removal.
 - Protected anchor rejection, followed by recovery.
@@ -132,7 +134,8 @@ Expected failures in that run:
 - Private submodule deploy failed before promotion with `could not read Username`
   because the site had no credentials for that private repository.
 - Protected anchor deploy failed with `protected path: wp-load.php`.
-- Shared path deploys failed with `shared path cannot be deployed: ...`.
+- Shared media container regular files deployed as leaf symlinks, and shared
+  runtime/control path deploys failed with `shared path cannot be deployed: ...`.
 - Foreign-layer deploy failed with
   `claim owned by another deployment: layer-owned`.
 
