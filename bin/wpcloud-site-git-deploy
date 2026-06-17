@@ -51,7 +51,7 @@ AUTH_RESOLVED_PUBLIC_KEY=""
 # Common CLI Helpers
 #
 # Small, command-agnostic utilities for usage output, fatal errors, identifier
-# validation, shell quoting, and shared docroot/state path construction.
+# validation, and shared predicates.
 
 usage() {
   cat <<-'USAGE'
@@ -88,81 +88,6 @@ require_name() {
 
 is_positive_int() {
   [[ "${1:-}" =~ ^[0-9]+$ ]] && ((10#$1 >= 1))
-}
-
-config_dir() {
-  local name="$1"
-  printf '%s/%s\n' "$DEPLOYMENTS_DIR" "$name"
-}
-
-docroot_deployment_base() {
-  local root="$1"
-  local id="$2"
-
-  printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
-}
-
-incoming_dir_for() {
-  local base="$1"
-
-  printf '%s/incoming\n' "$base"
-}
-
-incoming_release_dir_for() {
-  local base="$1"
-  local release_id="$2"
-
-  printf '%s/%s\n' "$(incoming_dir_for "$base")" "$release_id"
-}
-
-releases_dir_for() {
-  local base="$1"
-
-  printf '%s/releases\n' "$base"
-}
-
-release_dir_for() {
-  local base="$1"
-  local release_id="$2"
-
-  printf '%s/%s\n' "$(releases_dir_for "$base")" "$release_id"
-}
-
-metadata_dir_for() {
-  local base="$1"
-
-  printf '%s/metadata\n' "$base"
-}
-
-release_metadata_dir_for() {
-  local base="$1"
-  local release_id="$2"
-
-  printf '%s/%s\n' "$(metadata_dir_for "$base")" "$release_id"
-}
-
-current_path_for() {
-  local base="$1"
-
-  printf '%s/current\n' "$base"
-}
-
-current_target_for() {
-  local release_id="$1"
-
-  printf 'releases/%s\n' "$release_id"
-}
-
-lock_path_for() {
-  local base="$1"
-
-  printf '%s/deploy.lock\n' "$base"
-}
-
-exchanged_paths_file_for() {
-  local base="$1"
-
-  printf '%s/exchanged_paths\n' "$base"
 }
 
 # Command Argument Helpers
@@ -377,6 +302,11 @@ arg_one_action() {
 #
 # Read and write the one-value-per-file deployment configuration, validate
 # configurable paths, and create the tool-owned state directories.
+
+config_dir() {
+  local name="$1"
+  printf '%s/%s\n' "$DEPLOYMENTS_DIR" "$name"
+}
 
 config_value_path() {
   local name="$1"
@@ -784,8 +714,79 @@ prepare_git_features() {
 
 # Deploy Orchestration And Release Metadata
 #
-# Release id generation, incoming release creation, metadata value files,
-# no-op checks, promotion calls, cleanup, and rollback candidate selection.
+# Docroot deployment namespace layout, release id generation, incoming release
+# creation, metadata value files, no-op checks, promotion calls, cleanup, and
+# rollback candidate selection.
+
+docroot_deployment_base() {
+  local root="$1"
+  local id="$2"
+
+  printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
+}
+
+incoming_dir_for() {
+  local base="$1"
+
+  printf '%s/incoming\n' "$base"
+}
+
+incoming_release_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(incoming_dir_for "$base")" "$release_id"
+}
+
+releases_dir_for() {
+  local base="$1"
+
+  printf '%s/releases\n' "$base"
+}
+
+release_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(releases_dir_for "$base")" "$release_id"
+}
+
+metadata_dir_for() {
+  local base="$1"
+
+  printf '%s/metadata\n' "$base"
+}
+
+release_metadata_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(metadata_dir_for "$base")" "$release_id"
+}
+
+current_path_for() {
+  local base="$1"
+
+  printf '%s/current\n' "$base"
+}
+
+current_target_for() {
+  local release_id="$1"
+
+  printf 'releases/%s\n' "$release_id"
+}
+
+lock_path_for() {
+  local base="$1"
+
+  printf '%s/deploy.lock\n' "$base"
+}
+
+exchanged_paths_file_for() {
+  local base="$1"
+
+  printf '%s/exchanged_paths\n' "$base"
+}
 
 make_release_id() {
   local commit="$1"

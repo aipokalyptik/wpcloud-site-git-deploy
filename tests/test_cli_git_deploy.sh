@@ -171,6 +171,20 @@ awk '
   END { exit seen_repo_dir ? 0 : 1 }
 ' "$cli" || fail "repo_dir_for should stay with runtime repository helpers"
 awk '
+  /^# Deployment Config And State/ { in_config=1 }
+  /^# Runtime, Git, And Repository Helpers/ { exit seen_config_dir ? 0 : 1 }
+  in_config && /^config_dir\(\) \{/ { seen_config_dir=1 }
+  END { exit seen_config_dir ? 0 : 1 }
+' "$cli" || fail "config_dir should stay with deployment config helpers"
+awk '
+  /^# Deploy Orchestration And Release Metadata/ { in_deploy=1 }
+  /^# Auth And Doctor Helpers/ { exit seen_base && seen_current_target && seen_exchange_file ? 0 : 1 }
+  in_deploy && /^docroot_deployment_base\(\) \{/ { seen_base=1 }
+  in_deploy && /^current_target_for\(\) \{/ { seen_current_target=1 }
+  in_deploy && /^exchanged_paths_file_for\(\) \{/ { seen_exchange_file=1 }
+  END { exit seen_base && seen_current_target && seen_exchange_file ? 0 : 1 }
+' "$cli" || fail "docroot deployment namespace helpers should stay with deploy orchestration helpers"
+awk '
   /^cmd_[A-Za-z0-9_]+\(\) \{/ {
     in_cmd=1
     cmd=$0
