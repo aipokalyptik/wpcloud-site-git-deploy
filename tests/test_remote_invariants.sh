@@ -18,6 +18,7 @@ base="$docroot/.wpcloud-site-git-deploy/deployments/site"
 incoming="$base/incoming/release-one"
 find_log="$tmpdir/find.log"
 mv_log="$tmpdir/mv.log"
+mv_probe_count_file="$tmpdir/mv-probe-count"
 empty_boundaries="$tmpdir/empty-boundaries"
 empty_protected="$tmpdir/empty-protected"
 mkdir -p "$fake_bin" "$incoming" "$home_like"
@@ -51,11 +52,25 @@ cat >"$fake_bin/mv" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--exchange" ]]; then
-  printf 'mv --exchange %s %s\n' "${3:-${2:-}}" "${4:-${3:-}}" >>"${WPCLOUD_SITE_GIT_DEPLOY_MV_LOG:?}"
   shift
   [[ "${1:-}" == "--" ]] && shift
   left="$1"
   right="$2"
+  if [[ "$left" == *wpcloud-site-git-deploy-mv-exchange* || "$right" == *wpcloud-site-git-deploy-mv-exchange* ]]; then
+    printf 'mv --exchange probe %s %s\n' "$left" "$right" >>"${WPCLOUD_SITE_GIT_DEPLOY_MV_LOG:?}"
+    if [[ "${WPCLOUD_SITE_GIT_DEPLOY_FAIL_SECOND_MV_EXCHANGE_PROBE:-}" != "" ]]; then
+      count_file="${WPCLOUD_SITE_GIT_DEPLOY_MV_PROBE_COUNT_FILE:?}"
+      count=0
+      [[ -f "$count_file" ]] && count="$(cat "$count_file")"
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$count_file"
+      if ((count > 1)); then
+        exit 1
+      fi
+    fi
+  else
+    printf 'mv --exchange reclaim %s %s\n' "$left" "$right" >>"${WPCLOUD_SITE_GIT_DEPLOY_MV_LOG:?}"
+  fi
   tmp="${left}.exchange-test.$$"
   /bin/mv -- "$left" "$tmp"
   /bin/mv -- "$right" "$left"
@@ -71,6 +86,7 @@ chmod +x "$fake_bin/mv"
 export PATH="$fake_bin:$PATH"
 export WPCLOUD_SITE_GIT_DEPLOY_FIND_LOG="$find_log"
 export WPCLOUD_SITE_GIT_DEPLOY_MV_LOG="$mv_log"
+export WPCLOUD_SITE_GIT_DEPLOY_MV_PROBE_COUNT_FILE="$mv_probe_count_file"
 export WPCLOUD_SITE_GIT_DEPLOY_TEST_DOCROOT="$docroot"
 export WPCLOUD_SITE_GIT_DEPLOY_BOUNDARIES_FILE="$empty_boundaries"
 export WPCLOUD_SITE_GIT_DEPLOY_PROTECTED_ANCHORS_FILE="$empty_protected"
@@ -88,8 +104,12 @@ target="$(readlink "$docroot/index.html")"
 incoming_two="$base/incoming/release-two"
 mkdir -p "$incoming_two"
 printf 'updated\n' >"$incoming_two/index.html"
-"${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-two --keep-releases 2 --exchange-helper "$tmpdir/missing-exchange-helper" >/dev/null
-grep -q '^mv --exchange ' "$mv_log" || fail "existing public path reclaim should use mv --exchange before exchange helper"
+rm -f "$mv_probe_count_file"
+export WPCLOUD_SITE_GIT_DEPLOY_FAIL_SECOND_MV_EXCHANGE_PROBE=1
+"${remote[@]}" --docroot "$docroot" --deployment-id site --release-id release-two --keep-releases 2 >/dev/null
+unset WPCLOUD_SITE_GIT_DEPLOY_FAIL_SECOND_MV_EXCHANGE_PROBE
+grep -q '^mv --exchange reclaim ' "$mv_log" || fail "existing public path reclaim should use cached mv --exchange decision before exchange helper"
+[[ "$(cat "$mv_probe_count_file")" == "1" ]] || fail "engine should probe mv --exchange once per run"
 target="$(readlink "$docroot/index.html")"
 [[ "$target" == ".wpcloud-site-git-deploy/deployments/site/current/index.html" ]] || fail "public symlink target should remain docroot-relative after exchange, got: $target"
 

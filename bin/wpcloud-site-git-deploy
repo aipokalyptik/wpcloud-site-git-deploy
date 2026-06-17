@@ -1900,6 +1900,7 @@ ENGINE_MAINTENANCE_DOCROOT=""
 ENGINE_MAINTENANCE_DEPLOYMENT_ID=""
 ENGINE_MAINTENANCE_FILE="none"
 ENGINE_MAINTENANCE_OWNED=0
+ENGINE_MV_EXCHANGE=0
 
 cleanup_engine_exit() {
   cleanup_run_scratch
@@ -2165,7 +2166,7 @@ reconcile_new_claims() {
     # Existing public paths may contain real files/directories. Swap in the
     # deploy symlink atomically, then defer deletion of the exchanged-away path
     # until current points at the new release.
-    if mv_exchange_available; then
+    if ((ENGINE_MV_EXCHANGE)); then
       if ! mv --exchange -- "$tmp_link" "$public_path"; then
         rm -f -- "$tmp_link"
         engine_die "mv --exchange failed to reclaim path: $claim"
@@ -2920,8 +2921,13 @@ cmd_remote_deploy() {
   fi
 
   engine_require_id "deployment-id" "$deployment_id"
-  if [[ -z "$exchange_helper" ]] && ! mv_exchange_available; then
-    exchange_helper="$(docroot_deployment_base "$docroot" "$deployment_id")/exchange-rename"
+  if mv_exchange_available; then
+    ENGINE_MV_EXCHANGE=1
+  else
+    ENGINE_MV_EXCHANGE=0
+    if [[ -z "$exchange_helper" ]]; then
+      exchange_helper="$(docroot_deployment_base "$docroot" "$deployment_id")/exchange-rename"
+    fi
   fi
 
   ENGINE_MAINTENANCE_DOCROOT="$docroot"
