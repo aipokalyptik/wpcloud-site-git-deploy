@@ -59,7 +59,7 @@ it falls back to the first executable `exchange-rename` found on `PATH`.
 
 Runtime state created as you initialize and deploy sites:
 
-- `$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`
+- `$HOME/.wpcloud-site-git-deploy/deployments/<name>/cfg-*`
 - `$HOME/.wpcloud-site-git-deploy/keys/<name>_ed25519`
 - `$HOME/.wpcloud-site-git-deploy/repos/<name>/`
 - `$HOME/.wpcloud-site-git-deploy/tmp/`
@@ -135,8 +135,8 @@ cache from the remote before listing refs.
 
 `--keep-releases N` is configured during `init` and controls how many promoted
 release directories remain available for rollback after each successful deploy.
-It defaults to `3`. To change it later, edit the deployment config under
-`$HOME/.wpcloud-site-git-deploy/deployments/<name>.env`.
+It defaults to `3`. To change it later, edit
+`$HOME/.wpcloud-site-git-deploy/deployments/<name>/cfg-keep_releases`.
 
 Command output is script-friendly:
 
@@ -242,9 +242,10 @@ Each deploy:
 4. Prepares Git LFS files and submodules when present.
 5. Copies deployable files, or the configured deploy-root subdirectory, into `/srv/htdocs/.wpcloud-site-git-deploy/deployments/<deployment-id>/incoming/<release-id>/`, using `rsync --link-dest` against the active release when possible so unchanged files are hardlinked across kept releases.
 6. Creates the configured tool-owned WordPress maintenance marker before claim
-   reconciliation. The default is `.maintenance`; use `maintenance_file=none`
-   to disable it. The marker is PHP in WordPress's expected format and sets
-   `$upgrading` while it exists.
+   reconciliation. The default is `.maintenance`; run
+   `wpcloud-site-git-deploy config <name> --maintenance-file none` to disable
+   it. The marker is PHP in WordPress's expected format and sets `$upgrading`
+   while it exists.
 7. Validates the claim transition and promotes incoming to `releases/<release-id>/`.
 8. Reconciles public symlinks and atomically flips `current`.
 9. Runs the configured or one-run post-deploy hook, when present, from the

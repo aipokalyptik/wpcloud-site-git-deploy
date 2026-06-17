@@ -606,36 +606,37 @@ wpcloud-site-git-deploy init site \
 Change it later by editing:
 
 ```text
-$HOME/.wpcloud-site-git-deploy/deployments/site.env
+$HOME/.wpcloud-site-git-deploy/deployments/site/cfg-keep_releases
 ```
 
 Set:
 
-```bash
-keep_releases=10
+```text
+10
 ```
 
 The next successful deploy applies pruning.
 
 ## Change Repository URL Or Default Branch
 
-The `config` command only manages deploy roots. To change the repository URL,
-docroot, deployment ID, default branch, or retention, edit:
+The `config` command manages deploy roots, post-deploy hooks, and maintenance
+file settings. To change the repository URL, docroot, deployment ID, default
+branch, or retention, edit the matching `cfg-*` file under:
 
 ```text
-$HOME/.wpcloud-site-git-deploy/deployments/site.env
+$HOME/.wpcloud-site-git-deploy/deployments/site/
 ```
 
 Example default branch change:
 
 ```bash
-default_ref=release
+printf '%s\n' release >"$HOME/.wpcloud-site-git-deploy/deployments/site/cfg-default_ref"
 ```
 
 Example repository URL change:
 
 ```bash
-repo_url=git@github.com:example/new-site-repo.git
+printf '%s\n' git@github.com:example/new-site-repo.git >"$HOME/.wpcloud-site-git-deploy/deployments/site/cfg-repo_url"
 ```
 
 After changing `repo_url`, run:
@@ -727,7 +728,7 @@ There is no destructive `destroy` command. To stop using a deployment:
 
 ```bash
 wpcloud-site-git-deploy auth site --remove --purge-key
-rm -f "$HOME/.wpcloud-site-git-deploy/deployments/site.env"
+rm -rf "$HOME/.wpcloud-site-git-deploy/deployments/site"
 ```
 
 This stops CLI management for that `<name>`, but it does not unpublish the site

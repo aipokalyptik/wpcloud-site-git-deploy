@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Tool-owned runtime state. Override with WPCLOUD_SITE_GIT_DEPLOY_HOME in tests
 # or nonstandard installs; production defaults to the site SSH user's HOME.
 STATE_DIR="${WPCLOUD_SITE_GIT_DEPLOY_HOME:-$HOME/.wpcloud-site-git-deploy}"
-# Per-deployment config files, repo caches, transient worktrees, installed
+# Per-deployment config directories, repo caches, transient worktrees, installed
 # helper binaries, and deploy keys are intentionally kept outside the docroot.
 DEPLOYMENTS_DIR="$STATE_DIR/deployments"
 REPOS_DIR="$STATE_DIR/repos"
@@ -79,9 +79,9 @@ shell_quote() {
   printf '%q' "$1"
 }
 
-config_path() {
+config_dir() {
   local name="$1"
-  printf '%s/%s.env\n' "$DEPLOYMENTS_DIR" "$name"
+  printf '%s/%s\n' "$DEPLOYMENTS_DIR" "$name"
 }
 
 docroot_deployment_base() {
@@ -99,29 +99,80 @@ write_config_value() {
 
 # Deployment config and state
 
-load_config() {
+config_value_path() {
   local name="$1"
+  local key="$2"
+
+  printf '%s/cfg-%s\n' "$(config_dir "$name")" "$key"
+}
+
+read_config_value() {
+  local name="$1"
+  local key="$2"
+  local default="${3:-}"
   local path
 
+  path="$(config_value_path "$name" "$key")"
+  if [[ -f "$path" ]]; then
+    cat "$path"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
+read_required_config_value() {
+  local name="$1"
+  local key="$2"
+  local value
+
+  value="$(read_config_value "$name" "$key")"
+  [[ -n "$value" ]] || die "deployment config is missing required option: $key"
+  printf '%s\n' "$value"
+}
+
+write_deployment_config_value() {
+  local name="$1"
+  local key="$2"
+  local value="$3"
+  local dir
+  local path
+  local tmp_path
+
+  [[ "$value" != *$'\n'* ]] || die "deployment config value must not contain newlines: $key"
+  dir="$(config_dir "$name")"
+  path="$(config_value_path "$name" "$key")"
+  tmp_path="$path.tmp.$$"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  printf '%s\n' "$value" >"$tmp_path"
+  chmod 600 "$tmp_path"
+  mv -f "$tmp_path" "$path"
+}
+
+remove_deployment_config_value() {
+  local name="$1"
+  local key="$2"
+
+  rm -f -- "$(config_value_path "$name" "$key")"
+}
+
+load_config() {
+  local name="$1"
+  local dir
+
   require_name "$name"
-  path="$(config_path "$name")"
-  [[ -f "$path" ]] || die "deployment is not initialized: $name"
+  dir="$(config_dir "$name")"
+  [[ -d "$dir" ]] || die "deployment is not initialized: $name"
 
-  # Config files are owned runtime state under $HOME. They are written only by
-  # this CLI using shell-quoted assignments, then sourced so values with spaces
-  # survive round-trips without adding a parser dependency.
-  # shellcheck disable=SC1090
-  source "$path"
-
-  : "${repo_url:?}"
-  : "${docroot:?}"
-  : "${deployment_id:?}"
-  : "${default_ref:?}"
-  keep_releases="${keep_releases:-$DEFAULT_KEEP_RELEASES}"
-  ssh_key_path="${ssh_key_path:-}"
-  deploy_root="${deploy_root:-}"
-  post_deploy="${post_deploy:-}"
-  maintenance_file="${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}"
+  repo_url="$(read_required_config_value "$name" repo_url)"
+  docroot="$(read_required_config_value "$name" docroot)"
+  deployment_id="$(read_required_config_value "$name" deployment_id)"
+  default_ref="$(read_required_config_value "$name" default_ref)"
+  keep_releases="$(read_required_config_value "$name" keep_releases)"
+  ssh_key_path="$(read_config_value "$name" ssh_key_path)"
+  deploy_root="$(read_config_value "$name" deploy_root)"
+  post_deploy="$(read_config_value "$name" post_deploy)"
+  maintenance_file="$(read_config_value "$name" maintenance_file "$DEFAULT_MAINTENANCE_FILE")"
 }
 
 ensure_state_dirs() {
@@ -130,29 +181,36 @@ ensure_state_dirs() {
 
 write_config() {
   local name="$1"
-  local path
 
-  path="$(config_path "$name")"
-  {
-    write_config_value repo_url "$repo_url"
-    write_config_value docroot "$docroot"
-    write_config_value deployment_id "$deployment_id"
-    write_config_value default_ref "$default_ref"
-    write_config_value keep_releases "$keep_releases"
-    if [[ -n "${deploy_root:-}" ]]; then
-      write_config_value deploy_root "$deploy_root"
-    fi
-    if [[ -n "${post_deploy:-}" ]]; then
-      write_config_value post_deploy "$post_deploy"
-    fi
-    if [[ "${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}" != "$DEFAULT_MAINTENANCE_FILE" ]]; then
-      write_config_value maintenance_file "$maintenance_file"
-    fi
-    if [[ -n "${ssh_key_path:-}" ]]; then
-      write_config_value ssh_key_path "$ssh_key_path"
-    fi
-  } >"$path"
-  chmod 600 "$path"
+  write_deployment_config_value "$name" repo_url "$repo_url"
+  write_deployment_config_value "$name" docroot "$docroot"
+  write_deployment_config_value "$name" deployment_id "$deployment_id"
+  write_deployment_config_value "$name" default_ref "$default_ref"
+  write_deployment_config_value "$name" keep_releases "$keep_releases"
+
+  if [[ -n "${deploy_root:-}" ]]; then
+    write_deployment_config_value "$name" deploy_root "$deploy_root"
+  else
+    remove_deployment_config_value "$name" deploy_root
+  fi
+
+  if [[ -n "${post_deploy:-}" ]]; then
+    write_deployment_config_value "$name" post_deploy "$post_deploy"
+  else
+    remove_deployment_config_value "$name" post_deploy
+  fi
+
+  if [[ "${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}" != "$DEFAULT_MAINTENANCE_FILE" ]]; then
+    write_deployment_config_value "$name" maintenance_file "$maintenance_file"
+  else
+    remove_deployment_config_value "$name" maintenance_file
+  fi
+
+  if [[ -n "${ssh_key_path:-}" ]]; then
+    write_deployment_config_value "$name" ssh_key_path "$ssh_key_path"
+  else
+    remove_deployment_config_value "$name" ssh_key_path
+  fi
 }
 
 require_post_deploy_path() {

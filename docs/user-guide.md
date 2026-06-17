@@ -394,33 +394,33 @@ wpcloud-site-git-deploy init site \
 To change it later, edit:
 
 ```text
-$HOME/.wpcloud-site-git-deploy/deployments/<name>.env
+$HOME/.wpcloud-site-git-deploy/deployments/<name>/cfg-keep_releases
 ```
 
 Set:
 
-```bash
-keep_releases=5
+```text
+5
 ```
 
 Then run the next deploy. Pruning happens after successful deploy promotion.
 
 ## Changing Initialized Settings
 
-The `config` command only manages `deploy_root`. Other initialized settings are
-stored in:
+The `config` command manages deploy roots, post-deploy hooks, and maintenance
+file settings. Other initialized settings are stored as one value per file in:
 
 ```text
-$HOME/.wpcloud-site-git-deploy/deployments/<name>.env
+$HOME/.wpcloud-site-git-deploy/deployments/<name>/
 ```
 
-Edit that file when you need to change:
+Edit the matching `cfg-*` file when you need to change:
 
-- `repo_url`
-- `docroot`
-- `deployment_id`
-- `default_ref`
-- `keep_releases`
+- `cfg-repo_url`
+- `cfg-docroot`
+- `cfg-deployment_id`
+- `cfg-default_ref`
+- `cfg-keep_releases`
 
 After changing `repo_url`, run `auth` and `doctor` again because repository
 access may need a different deploy key. After changing `deployment_id`, the CLI

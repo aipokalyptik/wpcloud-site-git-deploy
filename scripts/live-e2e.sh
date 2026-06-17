@@ -269,6 +269,10 @@ rm -rf \
   /srv/htdocs/.github-ssh-deploy/deployments/cli-layer \
   /srv/htdocs/.github-ssh-deploy/deployments/cli-auth \
   /srv/htdocs/.github-ssh-deploy/deployments/cli-root-init \
+  "$HOME/.wpcloud-site-git-deploy/deployments/cli-test" \
+  "$HOME/.wpcloud-site-git-deploy/deployments/cli-layer" \
+  "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth" \
+  "$HOME/.wpcloud-site-git-deploy/deployments/cli-root-init" \
   "$HOME/.wpcloud-site-git-deploy/deployments/cli-test.env" \
   "$HOME/.wpcloud-site-git-deploy/deployments/cli-layer.env" \
   "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env" \
@@ -789,7 +793,7 @@ remote_script e2e-29-auth-generate <<'REMOTE'
 set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/.wpcloud-site-git-deploy/bin:$PATH"
 wpcloud-site-git-deploy auth cli-auth > /tmp/live-auth-create.out
-key_path=$(awk -F= '/^ssh_key_path=/{print $2}' "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env")
+key_path=$(cat "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path")
 test -n "$key_path"
 test -f "$key_path"
 test -f "$key_path.pub"
@@ -820,7 +824,7 @@ ssh-keygen -t ed25519 -N '' -C 'wpcloud-site-git-deploy-live-use-key' -f "$exter
 chmod 600 "$external"
 wpcloud-site-git-deploy auth cli-auth --use-key "$external" > /tmp/live-auth-use-key.out
 grep -F "Using existing deploy key: $external" /tmp/live-auth-use-key.out
-grep -Fx "ssh_key_path=$external" "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env"
+grep -Fx "$external" "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path"
 cp "$external.pub" /tmp/live-cli-auth-use-key.pub
 REMOTE
 copy_from_remote /tmp/live-cli-auth-use-key.pub "$repo_root/tmp/live-cli-auth-use-key.pub"
@@ -845,7 +849,7 @@ chmod 600 "$import_source"
 wpcloud-site-git-deploy auth cli-auth --import-key "$import_source" --force-new-key > /tmp/live-auth-import-key.out
 managed="$HOME/.wpcloud-site-git-deploy/keys/cli-auth_ed25519"
 grep -F "Imported deploy key: $managed" /tmp/live-auth-import-key.out
-grep -Fx "ssh_key_path=$managed" "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env"
+grep -Fx "$managed" "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path"
 test -f "$managed"
 test -f "$managed.pub"
 test "$(stat -c '%a' "$managed")" = "600"
@@ -870,15 +874,15 @@ fi
 grep -F -- '--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key' /tmp/live-auth-bad.out
 wpcloud-site-git-deploy auth cli-auth --remove > /tmp/live-auth-remove.out
 grep -F 'Removed deploy key configuration for cli-auth' /tmp/live-auth-remove.out
-! grep -E '^ssh_key_path=' "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env"
+test ! -e "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path"
 key_path="$HOME/.wpcloud-site-git-deploy/keys/cli-auth_ed25519"
 test -f "$key_path"
 test -f "$key_path.pub"
 wpcloud-site-git-deploy auth cli-auth > /tmp/live-auth-recreate.out
-key_path=$(awk -F= '/^ssh_key_path=/{print $2}' "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env")
+key_path=$(cat "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path")
 wpcloud-site-git-deploy auth cli-auth --remove --purge-key > /tmp/live-auth-purge.out
 grep -F 'Deleted deploy key files for cli-auth' /tmp/live-auth-purge.out
-! grep -E '^ssh_key_path=' "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth.env"
+test ! -e "$HOME/.wpcloud-site-git-deploy/deployments/cli-auth/cfg-ssh_key_path"
 test ! -e "$key_path"
 test ! -e "$key_path.pub"
 REMOTE

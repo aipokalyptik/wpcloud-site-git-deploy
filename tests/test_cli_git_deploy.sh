@@ -145,8 +145,8 @@ printf 'PRIVATE KEY\n' >"$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
 printf 'ssh-ed25519 PUBLICKEY site\n' >"$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519.pub"
 chmod 600 "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
 {
-  printf 'ssh_key_path=%q\n' "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
-} >>"$home_dir/.wpcloud-site-git-deploy/deployments/site.env"
+  printf '%s\n' "$home_dir/.wpcloud-site-git-deploy/keys/site_ed25519"
+} >"$home_dir/.wpcloud-site-git-deploy/deployments/site/cfg-ssh_key_path"
 
 first_deploy="$(HOME="$home_dir" "$cli" deploy site --tag v1)"
 first_release="${first_deploy%% *}"
@@ -552,8 +552,8 @@ printf 'PRIVATE KEY\n' >"$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed
 printf 'ssh-ed25519 PUBLICKEY lfs\n' >"$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519.pub"
 chmod 600 "$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
 {
-  printf 'ssh_key_path=%q\n' "$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
-} >>"$lfs_home_dir/.wpcloud-site-git-deploy/deployments/lfs-site.env"
+  printf '%s\n' "$lfs_home_dir/.wpcloud-site-git-deploy/keys/lfs-site_ed25519"
+} >"$lfs_home_dir/.wpcloud-site-git-deploy/deployments/lfs-site/cfg-ssh_key_path"
 HOME="$lfs_home_dir" "$cli" update lfs-site >/dev/null
 grep -Fx 'hydrated lfs content' "$lfs_docroot/media.bin" >/dev/null || fail "LFS file should be hydrated by git-lfs pull"
 grep -Fx 'version https://git-lfs.github.com/spec/v1' "$lfs_docroot/notes.txt" >/dev/null || fail "non-LFS pointer-shaped file should not fail deploy"
