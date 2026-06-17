@@ -102,6 +102,27 @@ assert_not_contains "maintenance_path()" "$cli"
 assert_not_contains "claims_overlap()" "$cli"
 assert_contains "arg_has --offline" "$cli"
 assert_contains "arg_set repo --repo" "$cli"
+for helper in \
+  "incoming_dir_for()" \
+  "incoming_release_dir_for()" \
+  "releases_dir_for()" \
+  "release_dir_for()" \
+  "metadata_dir_for()" \
+  "release_metadata_dir_for()" \
+  "current_path_for()" \
+  "current_target_for()" \
+  "lock_path_for()" \
+  "exchanged_paths_file_for()" \
+  "is_positive_int()" \
+  "key_mode_too_open()" \
+  "auth_resolve_key()" \
+  "doctor_check_commands()" \
+  "doctor_check_git_remote()" \
+  "validate_engine_arg_combination()" \
+  "print_release_claims()" \
+  "promote_incoming_release()"; do
+  assert_contains "$helper" "$cli"
+done
 for section in \
   "Global State And Constants" \
   "Common CLI Helpers" \

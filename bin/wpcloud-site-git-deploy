@@ -45,6 +45,8 @@ ARGS_DIE_FUNC="die"
 ARGS=()
 ARGS_FLAGS=()
 ARGS_VALUES=()
+AUTH_RESOLVED_KEY_PATH=""
+AUTH_RESOLVED_PUBLIC_KEY=""
 
 # Common CLI Helpers
 #
@@ -84,6 +86,10 @@ require_name() {
   [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || die "deployment name must contain only letters, numbers, dot, underscore, or dash"
 }
 
+is_positive_int() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && ((10#$1 >= 1))
+}
+
 config_dir() {
   local name="$1"
   printf '%s/%s\n' "$DEPLOYMENTS_DIR" "$name"
@@ -94,6 +100,69 @@ docroot_deployment_base() {
   local id="$2"
 
   printf '%s/%s/deployments/%s\n' "$root" "$DOCROOT_NAMESPACE" "$id"
+}
+
+incoming_dir_for() {
+  local base="$1"
+
+  printf '%s/incoming\n' "$base"
+}
+
+incoming_release_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(incoming_dir_for "$base")" "$release_id"
+}
+
+releases_dir_for() {
+  local base="$1"
+
+  printf '%s/releases\n' "$base"
+}
+
+release_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(releases_dir_for "$base")" "$release_id"
+}
+
+metadata_dir_for() {
+  local base="$1"
+
+  printf '%s/metadata\n' "$base"
+}
+
+release_metadata_dir_for() {
+  local base="$1"
+  local release_id="$2"
+
+  printf '%s/%s\n' "$(metadata_dir_for "$base")" "$release_id"
+}
+
+current_path_for() {
+  local base="$1"
+
+  printf '%s/current\n' "$base"
+}
+
+current_target_for() {
+  local release_id="$1"
+
+  printf 'releases/%s\n' "$release_id"
+}
+
+lock_path_for() {
+  local base="$1"
+
+  printf '%s/deploy.lock\n' "$base"
+}
+
+exchanged_paths_file_for() {
+  local base="$1"
+
+  printf '%s/exchanged_paths\n' "$base"
 }
 
 # Command Argument Helpers
@@ -786,7 +855,7 @@ copy_worktree_to_incoming() {
   local rsync_args=()
 
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
-  incoming="$base/incoming/$release_id"
+  incoming="$(incoming_release_dir_for "$base" "$release_id")"
 
   # Stage the exact filesystem that will become the next release. deploy_root
   # makes a repository subdirectory behave as the docroot root, while link_dest
@@ -804,8 +873,8 @@ copy_worktree_to_incoming() {
   default_exclude_file "$exclude_file"
 
   current_release="$(current_release_id || true)"
-  if [[ -n "$current_release" && -d "$base/releases/$current_release" ]]; then
-    link_dest="$base/releases/$current_release"
+  if [[ -n "$current_release" && -d "$(release_dir_for "$base" "$current_release")" ]]; then
+    link_dest="$(release_dir_for "$base" "$current_release")"
   fi
 
   rsync_args=(-a --delete --exclude-from="$exclude_file")
@@ -835,8 +904,10 @@ write_release_metadata() {
 
 release_metadata_dir() {
   local release_id="$1"
+  local base
 
-  printf '%s/metadata/%s\n' "$(docroot_deployment_base "$docroot" "$deployment_id")" "$release_id"
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  release_metadata_dir_for "$base" "$release_id"
 }
 
 write_metadata_value() {
@@ -962,9 +1033,11 @@ deploy_ref() {
 }
 
 current_release_id() {
+  local base
   local current
 
-  current="$(docroot_deployment_base "$docroot" "$deployment_id")/current"
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  current="$(current_path_for "$base")"
   [[ -L "$current" ]] || return 1
   readlink "$current" | sed 's#^releases/##'
 }
@@ -982,12 +1055,12 @@ select_rollback_release() {
   # releases instead of blindly picking the newest directory.
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   : >"$metadata_candidates"
-  find "$base/metadata" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
+  find "$(metadata_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r metadata_dir; do
       release_name="${metadata_dir##*/}"
       [[ "$release_name" == "$current" ]] && continue
-      [[ -d "$base/releases/$release_name" ]] || continue
-      printf '%s\n' "$base/releases/$release_name"
+      [[ -d "$(release_dir_for "$base" "$release_name")" ]] || continue
+      release_dir_for "$base" "$release_name"
     done >"$metadata_candidates"
 
   if [[ -s "$metadata_candidates" ]]; then
@@ -999,7 +1072,7 @@ select_rollback_release() {
   fi
   rm -f "$metadata_candidates"
 
-  find "$base/releases" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
+  find "$(releases_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r path; do
       [[ "${path##*/}" == "$current" ]] && continue
       printf '%s\n' "$path"
@@ -1056,6 +1129,12 @@ private_key_public_key() {
   ssh-keygen -y -f "$path" </dev/null 2>/dev/null
 }
 
+key_mode_too_open() {
+  local mode="$1"
+
+  (( (8#$mode) & 0077 ))
+}
+
 validate_existing_private_key() {
   local path="$1"
   local mode
@@ -1064,7 +1143,7 @@ validate_existing_private_key() {
   [[ -f "$path" ]] || die "private key is missing: $path"
   [[ -r "$path" ]] || die "private key is not readable: $path"
   mode="$(stat -c '%a' "$path")"
-  if (( (8#$mode) & 0077 )); then
+  if key_mode_too_open "$mode"; then
     die "private key permissions are too open: $mode"
   fi
   private_key_public_key "$path" >/dev/null || die "private key cannot be used without prompting or is not a valid private key: $path"
@@ -1085,6 +1164,214 @@ derive_public_key_file() {
   chmod 644 "$public_key_path"
 }
 
+auth_resolve_key() {
+  local name="$1"
+  local force_new_key="$2"
+  local use_key="$3"
+  local import_key="$4"
+  local key_path="$KEYS_DIR/${name}_ed25519"
+  local public_key
+  local import_key_real
+  local key_path_real
+
+  if [[ -n "$use_key" ]]; then
+    validate_existing_private_key "$use_key"
+    key_path="$use_key"
+    public_key="$(private_key_public_key "$key_path")"
+    printf 'Using existing deploy key: %s\n' "$key_path"
+  elif [[ -n "$import_key" ]]; then
+    validate_existing_private_key "$import_key"
+    if [[ -e "$import_key" && -e "$key_path" ]]; then
+      import_key_real="$(readlink -f "$import_key")"
+      key_path_real="$(readlink -f "$key_path")"
+    else
+      import_key_real=""
+      key_path_real=""
+    fi
+    if [[ -n "$import_key_real" && "$import_key_real" == "$key_path_real" ]]; then
+      die "cannot import the managed deploy key onto itself: $key_path"
+    fi
+    if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
+      die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
+    fi
+    rm -f "$key_path" "$key_path.pub"
+    mkdir -p "$KEYS_DIR"
+    chmod 700 "$KEYS_DIR"
+    cp "$import_key" "$key_path"
+    chmod 600 "$key_path"
+    derive_public_key_file "$key_path" "$key_path.pub"
+    public_key="$(cat "$key_path.pub")"
+    printf 'Imported deploy key: %s\n' "$key_path"
+  else
+    if ((force_new_key)); then
+      rm -f "$key_path" "$key_path.pub"
+    fi
+    if [[ -f "$key_path" ]]; then
+      printf 'Reusing existing deploy key: %s\n' "$key_path"
+    else
+      command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
+      mkdir -p "$KEYS_DIR"
+      chmod 700 "$KEYS_DIR"
+      (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
+      chmod 600 "$key_path"
+      chmod 644 "$key_path.pub"
+      printf 'Created deploy key: %s\n' "$key_path"
+    fi
+    validate_existing_private_key "$key_path"
+    if [[ -f "$key_path.pub" ]]; then
+      public_key="$(cat "$key_path.pub")"
+    else
+      derive_public_key_file "$key_path" "$key_path.pub"
+      public_key="$(cat "$key_path.pub")"
+    fi
+  fi
+
+  AUTH_RESOLVED_KEY_PATH="$key_path"
+  AUTH_RESOLVED_PUBLIC_KEY="$public_key"
+}
+
+doctor_check_commands() {
+  local command_name
+  local failures=0
+
+  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat date; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      printf 'OK command: %s found\n' "$command_name"
+    else
+      printf 'FAIL command: %s is required\n' "$command_name"
+      failures=$((failures + 1))
+    fi
+  done
+  if command -v ssh-keygen >/dev/null 2>&1; then
+    printf 'OK command: ssh-keygen found\n'
+  else
+    printf 'WARN command: ssh-keygen not found; auth and configured key validation will be unavailable\n'
+  fi
+
+  ((failures == 0))
+}
+
+doctor_check_docroot() {
+  if [[ -d "$docroot" ]]; then
+    printf 'OK docroot: exists: %s\n' "$docroot"
+    if [[ -w "$docroot" ]]; then
+      printf 'OK docroot: writable: %s\n' "$docroot"
+      return 0
+    fi
+    printf 'FAIL docroot: not writable: %s\n' "$docroot"
+    return 1
+  fi
+
+  printf 'FAIL docroot: does not exist: %s\n' "$docroot"
+  return 1
+}
+
+doctor_check_repo_url() {
+  local host
+
+  if repo_host_from_url "$repo_url" >/dev/null 2>&1; then
+    host="$(repo_host_from_url "$repo_url")"
+    printf 'OK repo: recognized host: %s\n' "$host"
+    return 0
+  fi
+
+  printf 'FAIL repo: could not parse repository URL: %s\n' "$repo_url"
+  return 1
+}
+
+doctor_check_exchange() {
+  local helper
+
+  if mv_exchange_available; then
+    printf 'OK exchange: mv --exchange available\n'
+    return 0
+  fi
+  if helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
+    printf 'OK helper: exchange-rename available: %s\n' "$helper"
+    return 0
+  fi
+
+  printf 'FAIL exchange: mv --exchange and exchange-rename helper are unavailable\n'
+  return 1
+}
+
+doctor_check_ssh_key() {
+  local mode
+
+  if [[ -z "${ssh_key_path:-}" ]]; then
+    printf 'WARN ssh-key: no deploy key configured; Git will use default credentials or public repository access\n'
+    return 0
+  fi
+  if [[ ! -f "$ssh_key_path" ]]; then
+    printf 'FAIL ssh-key: private key is missing: %s\n' "$ssh_key_path"
+    return 1
+  fi
+  if [[ ! -r "$ssh_key_path" ]]; then
+    printf 'FAIL ssh-key: private key is not readable: %s\n' "$ssh_key_path"
+    return 1
+  fi
+
+  mode="$(stat -c '%a' "$ssh_key_path")"
+  if key_mode_too_open "$mode"; then
+    printf 'FAIL ssh-key: private key permissions are too open: %s\n' "$mode"
+    return 1
+  fi
+
+  printf 'OK ssh-key: private key is readable\n'
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    printf 'FAIL ssh-key: ssh-keygen is required to validate deploy keys\n'
+    return 1
+  fi
+  if private_key_public_key "$ssh_key_path" >/dev/null; then
+    if [[ -f "$ssh_key_path.pub" ]]; then
+      printf 'OK ssh-key: public key exists\n'
+    else
+      printf 'OK ssh-key: public key can be derived\n'
+    fi
+    return 0
+  fi
+
+  printf 'FAIL ssh-key: private key cannot be used without prompting or is not a valid private key: %s\n' "$ssh_key_path"
+  return 1
+}
+
+doctor_check_git_lfs() {
+  local name="$1"
+  local repo_dir
+
+  repo_dir="$(repo_dir_for "$name")"
+  if [[ -d "$repo_dir/.git" ]] && git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
+    if command -v git-lfs >/dev/null 2>&1; then
+      printf 'OK git-lfs: available for cached LFS-tracked repository\n'
+      return 0
+    fi
+    printf 'FAIL git-lfs: git-lfs is required for cached LFS-tracked repository\n'
+    return 1
+  fi
+
+  printf 'WARN git-lfs: not checked; no root .gitattributes LFS marker found in cached HEAD\n'
+  return 0
+}
+
+doctor_check_git_remote() {
+  local offline="$1"
+
+  if ((offline)); then
+    printf 'WARN git-remote: skipped remote access check because --offline was provided\n'
+    return 0
+  fi
+  if git_with_auth ls-remote "$repo_url" HEAD >/dev/null 2>&1; then
+    printf 'OK git-remote: remote access succeeded\n'
+    return 0
+  fi
+  if [[ -z "${ssh_key_path:-}" ]]; then
+    printf 'FAIL git-remote: remote access failed without a configured deploy key; run auth for private SSH repositories or check repository access\n'
+  else
+    printf 'FAIL git-remote: remote access failed; add the deploy key to the repository host or check repository access\n'
+  fi
+  return 1
+}
+
 # Public Command Handlers
 #
 # User-facing command implementations. These functions parse command-specific
@@ -1103,8 +1390,6 @@ cmd_auth() {
   local import_key=""
   local host
   local public_key
-  local import_key_real
-  local key_path_real
 
   # Configure exactly one deploy key source for this deployment: generated
   # managed key, external key path, imported managed copy, or removal.
@@ -1158,58 +1443,9 @@ cmd_auth() {
   [[ "$repo_url" =~ ^[^@:/]+@[^:/]+:.+$ || "$repo_url" =~ ^ssh://[^@]+@[^/]+/.+$ ]] ||
     die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
 
-  key_path="$KEYS_DIR/${name}_ed25519"
-  if [[ -n "$use_key" ]]; then
-    validate_existing_private_key "$use_key"
-    key_path="$use_key"
-    public_key="$(private_key_public_key "$key_path")"
-    printf 'Using existing deploy key: %s\n' "$key_path"
-  elif [[ -n "$import_key" ]]; then
-    validate_existing_private_key "$import_key"
-    if [[ -e "$import_key" && -e "$key_path" ]]; then
-      import_key_real="$(cd "$(dirname "$import_key")" && pwd -P)/$(basename "$import_key")"
-      key_path_real="$(cd "$(dirname "$key_path")" && pwd -P)/$(basename "$key_path")"
-    else
-      import_key_real=""
-      key_path_real=""
-    fi
-    if [[ -n "$import_key_real" && "$import_key_real" == "$key_path_real" ]]; then
-      die "cannot import the managed deploy key onto itself: $key_path"
-    fi
-    if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
-      die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
-    fi
-    rm -f "$key_path" "$key_path.pub"
-    mkdir -p "$KEYS_DIR"
-    chmod 700 "$KEYS_DIR"
-    cp "$import_key" "$key_path"
-    chmod 600 "$key_path"
-    derive_public_key_file "$key_path" "$key_path.pub"
-    public_key="$(cat "$key_path.pub")"
-    printf 'Imported deploy key: %s\n' "$key_path"
-  else
-    if ((force_new_key)); then
-      rm -f "$key_path" "$key_path.pub"
-    fi
-    if [[ -f "$key_path" ]]; then
-      printf 'Reusing existing deploy key: %s\n' "$key_path"
-    else
-      command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
-      mkdir -p "$KEYS_DIR"
-      chmod 700 "$KEYS_DIR"
-      (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
-      chmod 600 "$key_path"
-      chmod 644 "$key_path.pub"
-      printf 'Created deploy key: %s\n' "$key_path"
-    fi
-    validate_existing_private_key "$key_path"
-    if [[ -f "$key_path.pub" ]]; then
-      public_key="$(cat "$key_path.pub")"
-    else
-      derive_public_key_file "$key_path" "$key_path.pub"
-      public_key="$(cat "$key_path.pub")"
-    fi
-  fi
+  auth_resolve_key "$name" "$force_new_key" "$use_key" "$import_key"
+  key_path="$AUTH_RESOLVED_KEY_PATH"
+  public_key="$AUTH_RESOLVED_PUBLIC_KEY"
 
   ssh_key_path="$key_path"
   write_config "$name"
@@ -1233,11 +1469,6 @@ cmd_doctor() {
   local name="${1:-}"
   shift || true
   local offline=0
-  local command_name
-  local mode
-  local host
-  local repo_dir
-  local helper
   local doctor_failures=0
 
   # Report every setup problem found instead of failing on the first one so a
@@ -1254,104 +1485,13 @@ cmd_doctor() {
     return 1
   fi
 
-  for command_name in bash git rsync find flock sort comm cut grep cat readlink ln rm mv mkdir mktemp touch stat date; do
-    if command -v "$command_name" >/dev/null 2>&1; then
-      printf 'OK command: %s found\n' "$command_name"
-    else
-      printf 'FAIL command: %s is required\n' "$command_name"
-      doctor_failures=$((doctor_failures + 1))
-    fi
-  done
-  if command -v ssh-keygen >/dev/null 2>&1; then
-    printf 'OK command: ssh-keygen found\n'
-  else
-    printf 'WARN command: ssh-keygen not found; auth and configured key validation will be unavailable\n'
-  fi
-
-  if [[ -d "$docroot" ]]; then
-    printf 'OK docroot: exists: %s\n' "$docroot"
-    if [[ -w "$docroot" ]]; then
-      printf 'OK docroot: writable: %s\n' "$docroot"
-    else
-      printf 'FAIL docroot: not writable: %s\n' "$docroot"
-      doctor_failures=$((doctor_failures + 1))
-    fi
-  else
-    printf 'FAIL docroot: does not exist: %s\n' "$docroot"
-    doctor_failures=$((doctor_failures + 1))
-  fi
-
-  if repo_host_from_url "$repo_url" >/dev/null 2>&1; then
-    host="$(repo_host_from_url "$repo_url")"
-    printf 'OK repo: recognized host: %s\n' "$host"
-  else
-    printf 'FAIL repo: could not parse repository URL: %s\n' "$repo_url"
-    doctor_failures=$((doctor_failures + 1))
-  fi
-
-  if mv_exchange_available; then
-    printf 'OK exchange: mv --exchange available\n'
-  elif helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
-    printf 'OK helper: exchange-rename available: %s\n' "$helper"
-  else
-    printf 'FAIL exchange: mv --exchange and exchange-rename helper are unavailable\n'
-    doctor_failures=$((doctor_failures + 1))
-  fi
-
-  if [[ -z "${ssh_key_path:-}" ]]; then
-    printf 'WARN ssh-key: no deploy key configured; Git will use default credentials or public repository access\n'
-  elif [[ ! -f "$ssh_key_path" ]]; then
-    printf 'FAIL ssh-key: private key is missing: %s\n' "$ssh_key_path"
-    doctor_failures=$((doctor_failures + 1))
-  elif [[ ! -r "$ssh_key_path" ]]; then
-    printf 'FAIL ssh-key: private key is not readable: %s\n' "$ssh_key_path"
-    doctor_failures=$((doctor_failures + 1))
-  else
-    mode="$(stat -c '%a' "$ssh_key_path")"
-    if (( (8#$mode) & 0077 )); then
-      printf 'FAIL ssh-key: private key permissions are too open: %s\n' "$mode"
-      doctor_failures=$((doctor_failures + 1))
-    else
-      printf 'OK ssh-key: private key is readable\n'
-      if ! command -v ssh-keygen >/dev/null 2>&1; then
-        printf 'FAIL ssh-key: ssh-keygen is required to validate deploy keys\n'
-        doctor_failures=$((doctor_failures + 1))
-      elif private_key_public_key "$ssh_key_path" >/dev/null; then
-        if [[ -f "$ssh_key_path.pub" ]]; then
-          printf 'OK ssh-key: public key exists\n'
-        else
-          printf 'OK ssh-key: public key can be derived\n'
-        fi
-      else
-        printf 'FAIL ssh-key: private key cannot be used without prompting or is not a valid private key: %s\n' "$ssh_key_path"
-        doctor_failures=$((doctor_failures + 1))
-      fi
-    fi
-  fi
-
-  repo_dir="$(repo_dir_for "$name")"
-  if [[ -d "$repo_dir/.git" ]] && git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
-    if command -v git-lfs >/dev/null 2>&1; then
-      printf 'OK git-lfs: available for cached LFS-tracked repository\n'
-    else
-      printf 'FAIL git-lfs: git-lfs is required for cached LFS-tracked repository\n'
-      doctor_failures=$((doctor_failures + 1))
-    fi
-  else
-    printf 'WARN git-lfs: not checked; no root .gitattributes LFS marker found in cached HEAD\n'
-  fi
-
-  if ((offline)); then
-    printf 'WARN git-remote: skipped remote access check because --offline was provided\n'
-  elif git_with_auth ls-remote "$repo_url" HEAD >/dev/null 2>&1; then
-    printf 'OK git-remote: remote access succeeded\n'
-  elif [[ -z "${ssh_key_path:-}" ]]; then
-    printf 'FAIL git-remote: remote access failed without a configured deploy key; run auth for private SSH repositories or check repository access\n'
-    doctor_failures=$((doctor_failures + 1))
-  else
-    printf 'FAIL git-remote: remote access failed; add the deploy key to the repository host or check repository access\n'
-    doctor_failures=$((doctor_failures + 1))
-  fi
+  doctor_check_commands || doctor_failures=$((doctor_failures + 1))
+  doctor_check_docroot || doctor_failures=$((doctor_failures + 1))
+  doctor_check_repo_url || doctor_failures=$((doctor_failures + 1))
+  doctor_check_exchange || doctor_failures=$((doctor_failures + 1))
+  doctor_check_ssh_key || doctor_failures=$((doctor_failures + 1))
+  doctor_check_git_lfs "$name" || doctor_failures=$((doctor_failures + 1))
+  doctor_check_git_remote "$offline" || doctor_failures=$((doctor_failures + 1))
 
   ((doctor_failures == 0))
 }
@@ -1429,7 +1569,7 @@ cmd_init() {
   [[ -n "$init_deployment_id" ]] || die "--deployment-id is required"
   [[ -n "$init_default_ref" ]] || die "--default-ref is required"
   [[ "$init_deployment_id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "deployment-id must be a normalized id"
-  [[ "$init_keep_releases" =~ ^[0-9]+$ && "$init_keep_releases" -ge 1 ]] || die "--keep-releases must be a positive integer"
+  is_positive_int "$init_keep_releases" || die "--keep-releases must be a positive integer"
   if [[ -n "$init_deploy_root" ]]; then
     require_deploy_root "$init_deploy_root"
   fi
@@ -1532,9 +1672,9 @@ cmd_releases() {
   load_config "$name"
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   current="$(current_release_id || true)"
-  find "$base/releases" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r |
+  find "$(releases_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r |
   while IFS= read -r release; do
-    metadata="$base/metadata/${release##*/}"
+    metadata="$(release_metadata_dir_for "$base" "${release##*/}")"
     printf '%s' "${release##*/}"
     [[ "${release##*/}" == "$current" ]] && printf ' current'
     if [[ -d "$metadata" ]]; then
@@ -1905,11 +2045,12 @@ sweep_stale_scratch_dirs() {
 switch_current() {
   local base="$1"
   local release_id="$2"
-  local current="$base/current"
+  local current
   local tmp_current="$base/.current.$release_id.$$"
 
+  current="$(current_path_for "$base")"
   rm -f "$tmp_current"
-  ln -s "releases/$release_id" "$tmp_current"
+  ln -s "$(current_target_for "$release_id")" "$tmp_current"
 
   # Every public symlink points through current. Replacing current must therefore
   # be a single rename, never remove-then-create.
@@ -2513,8 +2654,8 @@ prepare_claim_transition() {
   discover_boundary_claims "$docroot" "$boundaries_file"
   discover_protected_anchors "$docroot" "$protected_anchors_file"
 
-  if [[ -L "$base/current" ]]; then
-    current_target="$(readlink "$base/current")"
+  if [[ -L "$(current_path_for "$base")" ]]; then
+    current_target="$(readlink "$(current_path_for "$base")")"
     compute_claims "$base/$current_target" "$boundaries_file" "$old_release_claims_file"
   else
     : >"$old_release_claims_file"
@@ -2539,7 +2680,9 @@ apply_claim_transition() {
   local scratch_dir="$6"
   local new_claims_file="$scratch_dir/new_claims"
   local removed_claims_file="$scratch_dir/removed_claims"
-  local exchanged_paths_file="$base/exchanged_paths"
+  local exchanged_paths_file
+
+  exchanged_paths_file="$(exchanged_paths_file_for "$base")"
 
   : >"$exchanged_paths_file"
   # Parent/child claim granularity can change between releases. Remove exact
@@ -2548,7 +2691,7 @@ apply_claim_transition() {
   cleanup_overlapping_removed_claims "$docroot" "$deployment_id" "$removed_claims_file" "$new_claims_file"
   reconcile_new_claims "$docroot" "$deployment_id" "$new_claims_file" "$exchange_helper" "$exchanged_paths_file"
   switch_current "$base" "$release_id"
-  [[ "$(readlink "$base/current")" == "releases/$release_id" ]] || engine_die "current does not point to releases/$release_id"
+  [[ "$(readlink "$(current_path_for "$base")")" == "$(current_target_for "$release_id")" ]] || engine_die "current does not point to releases/$release_id"
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   # Non-overlapping removed claims are cleaned only after current points at the
@@ -2573,10 +2716,10 @@ rollback_release() {
   local scratch_dir
 
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
-  releases_dir="$base/releases"
-  release_dir="$releases_dir/$rollback_to"
-  lock_file="$base/deploy.lock"
-  exchanged_paths_file="$base/exchanged_paths"
+  releases_dir="$(releases_dir_for "$base")"
+  release_dir="$(release_dir_for "$base" "$rollback_to")"
+  lock_file="$(lock_path_for "$base")"
+  exchanged_paths_file="$(exchanged_paths_file_for "$base")"
 
   mkdir -p "$releases_dir"
 
@@ -2595,7 +2738,124 @@ rollback_release() {
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
   ENGINE_MAINTENANCE_OWNED=0
 
-  echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$rollback_to" >&2
+  echo "wpcloud-site-git-deploy __remote-deploy: current=$(current_target_for "$rollback_to")" >&2
+}
+
+validate_engine_arg_combination() {
+  local release_id="$1"
+  local rollback_to="$2"
+  local keep_releases="$3"
+  local post_deploy_file="$4"
+  local print_claims="$5"
+
+  if [[ -n "$rollback_to" ]]; then
+    [[ -z "$release_id" ]] || engine_die "--release-id cannot be used with --rollback-to"
+    if [[ -n "$keep_releases" ]]; then
+      is_positive_int "$keep_releases" || engine_die "keep-releases must be a positive integer"
+    fi
+    [[ -z "$post_deploy_file" ]] || engine_die "--post-deploy-file cannot be used with --rollback-to"
+    ((print_claims == 0)) || engine_die "--print-claims cannot be used with --rollback-to"
+    engine_require_id "rollback-to" "$rollback_to"
+    return 0
+  fi
+
+  engine_require_id "release-id" "$release_id"
+  is_positive_int "$keep_releases" || engine_die "keep-releases must be a positive integer"
+}
+
+print_release_claims() {
+  local docroot="$1"
+  local deployment_id="$2"
+  local release_id="$3"
+  local maintenance_file="$4"
+  local base
+  local incoming_dir
+  local releases_dir
+  local incoming_release
+  local lock_file
+  local exchanged_paths_file
+  local scratch_dir
+  local boundaries_file
+  local new_claims_file
+
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  incoming_dir="$(incoming_dir_for "$base")"
+  releases_dir="$(releases_dir_for "$base")"
+  incoming_release="$(incoming_release_dir_for "$base" "$release_id")"
+  lock_file="$(lock_path_for "$base")"
+  exchanged_paths_file="$(exchanged_paths_file_for "$base")"
+
+  mkdir -p "$incoming_dir" "$releases_dir"
+  acquire_lock "$lock_file"
+
+  [[ -d "$incoming_release" ]] || engine_die "incoming release does not exist: $incoming_release"
+  cleanup_exchanged_paths "$exchanged_paths_file"
+  rm -f -- "$exchanged_paths_file"
+  sweep_stale_scratch_dirs "$base"
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+
+  scratch_dir="$(create_scratch_dir "$base")"
+  boundaries_file="$scratch_dir/boundaries"
+  new_claims_file="$scratch_dir/new_claims"
+  discover_boundary_claims "$docroot" "$boundaries_file"
+  compute_claims "$incoming_release" "$boundaries_file" "$new_claims_file" 1
+  cat "$new_claims_file"
+}
+
+promote_incoming_release() {
+  local docroot="$1"
+  local deployment_id="$2"
+  local release_id="$3"
+  local keep_releases="$4"
+  local exchange_helper="$5"
+  local post_deploy_file="$6"
+  local maintenance_file="$7"
+  local base
+  local incoming_dir
+  local releases_dir
+  local incoming_release
+  local release_dir
+  local lock_file
+  local exchanged_paths_file
+  local scratch_dir
+
+  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
+  incoming_dir="$(incoming_dir_for "$base")"
+  releases_dir="$(releases_dir_for "$base")"
+  incoming_release="$(incoming_release_dir_for "$base" "$release_id")"
+  release_dir="$(release_dir_for "$base" "$release_id")"
+  lock_file="$(lock_path_for "$base")"
+  exchanged_paths_file="$(exchanged_paths_file_for "$base")"
+
+  mkdir -p "$incoming_dir" "$releases_dir"
+  acquire_lock "$lock_file"
+
+  [[ -d "$incoming_release" ]] || engine_die "incoming release does not exist: $incoming_release"
+  cleanup_exchanged_paths "$exchanged_paths_file"
+  rm -f -- "$exchanged_paths_file"
+  sweep_stale_scratch_dirs "$base"
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+
+  scratch_dir="$(create_scratch_dir "$base")"
+  [[ ! -e "$release_dir" ]] || engine_die "release already exists: $release_dir"
+
+  create_maintenance_file "$docroot" "$deployment_id" "$release_id" "$maintenance_file"
+  prepare_claim_transition "$docroot" "$deployment_id" "$base" "$incoming_release" "$scratch_dir"
+  mv "$incoming_release" "$release_dir"
+  # Uploaded directory mtimes reflect upload time. Refresh the promoted release
+  # mtime so keep-releases pruning keeps the most recently promoted releases.
+  touch "$release_dir"
+  apply_claim_transition "$docroot" "$deployment_id" "$base" "$release_id" "$exchange_helper" "$scratch_dir"
+  if ! run_post_deploy "$docroot" "$post_deploy_file"; then
+    cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+    ENGINE_MAINTENANCE_OWNED=0
+    engine_die "post-deploy failed: $post_deploy_file"
+  fi
+  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
+  ENGINE_MAINTENANCE_OWNED=0
+  prune_releases "$releases_dir" "$keep_releases" "$release_id"
+
+  echo "wpcloud-site-git-deploy __remote-deploy: current=$(current_target_for "$release_id")" >&2
 }
 
 cmd_remote_deploy() {
@@ -2671,84 +2931,18 @@ cmd_remote_deploy() {
   trap cleanup_engine_exit EXIT
   require_remote_capabilities
 
+  validate_engine_arg_combination "$release_id" "$rollback_to" "$keep_releases" "$post_deploy_file" "$print_claims"
   if [[ -n "$rollback_to" ]]; then
-    [[ -z "$release_id" ]] || engine_die "--release-id cannot be used with --rollback-to"
-    if [[ -n "$keep_releases" ]]; then
-      if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || ((10#$keep_releases < 1)); then
-        engine_die "keep-releases must be a positive integer"
-      fi
-    fi
-    [[ -z "$post_deploy_file" ]] || engine_die "--post-deploy-file cannot be used with --rollback-to"
-    ((print_claims == 0)) || engine_die "--print-claims cannot be used with --rollback-to"
-    engine_require_id "rollback-to" "$rollback_to"
     rollback_release "$docroot" "$deployment_id" "$rollback_to" "$exchange_helper" "$maintenance_file"
     return
   fi
 
-  engine_require_id "release-id" "$release_id"
-  if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || ((10#$keep_releases < 1)); then
-    engine_die "keep-releases must be a positive integer"
-  fi
-
-  local base
-  local incoming_dir
-  local releases_dir
-  local incoming_release
-  local release_dir
-  local lock_file
-  local exchanged_paths_file
-  local scratch_dir
-  local boundaries_file
-  local new_claims_file
-
-  base="$(docroot_deployment_base "$docroot" "$deployment_id")"
-  incoming_dir="$base/incoming"
-  releases_dir="$base/releases"
-  incoming_release="$incoming_dir/$release_id"
-  release_dir="$releases_dir/$release_id"
-  lock_file="$base/deploy.lock"
-  exchanged_paths_file="$base/exchanged_paths"
-
-  mkdir -p "$incoming_dir" "$releases_dir"
-
-  acquire_lock "$lock_file"
-
-  [[ -d "$incoming_release" ]] || engine_die "incoming release does not exist: $incoming_release"
-  cleanup_exchanged_paths "$exchanged_paths_file"
-  rm -f -- "$exchanged_paths_file"
-  sweep_stale_scratch_dirs "$base"
-  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
-
-  scratch_dir="$(create_scratch_dir "$base")"
-  boundaries_file="$scratch_dir/boundaries"
-  new_claims_file="$scratch_dir/new_claims"
-  discover_boundary_claims "$docroot" "$boundaries_file"
-
   if ((print_claims)); then
-    compute_claims "$incoming_release" "$boundaries_file" "$new_claims_file" 1
-    cat "$new_claims_file"
-    exit 0
+    print_release_claims "$docroot" "$deployment_id" "$release_id" "$maintenance_file"
+    return
   fi
 
-  [[ ! -e "$release_dir" ]] || engine_die "release already exists: $release_dir"
-
-  create_maintenance_file "$docroot" "$deployment_id" "$release_id" "$maintenance_file"
-  prepare_claim_transition "$docroot" "$deployment_id" "$base" "$incoming_release" "$scratch_dir"
-  mv "$incoming_release" "$release_dir"
-  # Uploaded directory mtimes reflect upload time. Refresh the promoted release
-  # mtime so keep-releases pruning keeps the most recently promoted releases.
-  touch "$release_dir"
-  apply_claim_transition "$docroot" "$deployment_id" "$base" "$release_id" "$exchange_helper" "$scratch_dir"
-  if ! run_post_deploy "$docroot" "$post_deploy_file"; then
-    cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
-    ENGINE_MAINTENANCE_OWNED=0
-    engine_die "post-deploy failed: $post_deploy_file"
-  fi
-  cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
-  ENGINE_MAINTENANCE_OWNED=0
-  prune_releases "$releases_dir" "$keep_releases" "$release_id"
-
-  echo "wpcloud-site-git-deploy __remote-deploy: current=releases/$release_id" >&2
+  promote_incoming_release "$docroot" "$deployment_id" "$release_id" "$keep_releases" "$exchange_helper" "$post_deploy_file" "$maintenance_file"
 }
 
 # Final Command Dispatcher
