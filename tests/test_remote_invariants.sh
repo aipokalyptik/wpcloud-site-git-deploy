@@ -145,6 +145,8 @@ assert_shared_path_fails() {
 assert_shared_path_fails cache "wp-content/cache/object-cache.bin" "wp-content/cache"
 assert_shared_path_fails upgrade "wp-content/upgrade/package.tmp" "wp-content/upgrade"
 assert_shared_path_fails maintenance ".maintenance" ".maintenance"
+assert_shared_path_fails uploads-root-file "wp-content/uploads" "wp-content/uploads"
+assert_shared_path_fails blogs-root-file "wp-content/blogs.dir" "wp-content/blogs.dir"
 
 assert_shared_container_file_deploys() {
   local name="$1"

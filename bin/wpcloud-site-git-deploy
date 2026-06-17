@@ -2347,7 +2347,7 @@ shared_container_for_public_path() {
   local shared_path
 
   for shared_path in "${SHARED_CONTAINER_PATHS[@]}"; do
-    if [[ "$public_path" == "$shared_path/"* ]]; then
+    if [[ "$public_path" == "$shared_path" || "$public_path" == "$shared_path/"* ]]; then
       printf '%s\n' "$shared_path"
       return 0
     fi
@@ -2399,6 +2399,10 @@ compute_claims() {
       engine_die "shared path cannot be deployed: $shared_path"
     fi
     if shared_path="$(shared_container_for_public_path "$public_path")"; then
+      if [[ "$reject_shared_paths" == "1" && "$public_path" == "$shared_path" ]]; then
+        rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
+        engine_die "shared path cannot be deployed: $shared_path"
+      fi
       if [[ "$reject_shared_paths" == "1" && -L "$release_file" ]]; then
         rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
         engine_die "shared container symlink cannot be deployed: $public_path"

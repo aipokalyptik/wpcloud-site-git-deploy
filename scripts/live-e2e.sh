@@ -666,6 +666,13 @@ sha="$(commit_fixture "E2E 13 shared media leaf files")"
 deploy_update e2e-13-shared-media-leaf-files "test -d /srv/htdocs/wp-content/uploads; test -d /srv/htdocs/wp-content/uploads/static; test -L /srv/htdocs/wp-content/uploads/static/logo.png; grep -Fx 'deploy-managed upload' /srv/htdocs/wp-content/uploads/static/logo.png; test -d /srv/htdocs/wp-content/blogs.dir/1/files; test -L /srv/htdocs/wp-content/blogs.dir/1/files/logo.png; grep -Fx 'deploy-managed multisite upload' /srv/htdocs/wp-content/blogs.dir/1/files/logo.png"
 log "- commit $sha"
 
+rm -rf "$fixture/wp-content/uploads"
+printf 'uploads container root should not deploy\n' >"$fixture/wp-content/uploads"
+sha="$(commit_fixture "E2E 13b shared uploads root rejection")"
+expect_update_failure e2e-13b-shared-uploads-root "shared path cannot be deployed: wp-content/uploads"
+log "- commit $sha"
+
+rm -f "$fixture/wp-content/uploads"
 printf 'tracked maintenance should not deploy\n' >"$fixture/.maintenance"
 sha="$(commit_fixture "E2E 14 shared maintenance rejection")"
 expect_update_failure e2e-14-shared-maintenance "shared path cannot be deployed: .maintenance"
