@@ -3,7 +3,9 @@
 This document maps each public verb to the Go code path that handles it. The
 charts are intentionally split by verb so a maintainer can audit one command
 without reading the whole CLI. Line links point to the current implementation and
-should be refreshed when the relevant code moves.
+should be refreshed when the relevant code moves. They are audit aids rather
+than generated anchors; when a linked file changes substantially, prefer the
+named function or symbol near the linked line over the exact line number.
 
 All public commands enter through `main`, parse into a `cli.Command`, resolve the
 tool state layout, and dispatch by verb.
@@ -311,6 +313,7 @@ flowchart TD
   LOCK{"lock acquired?"}
   CLEAN["cleanup exchanged paths and owned maintenance"]
   INCOMING{"incoming exists?"}
+  RELEASE{"release id already exists?"}
   MAINT{"create maintenance marker?"}
   BOUNDARIES["discover boundaries"]
   MOVE["rename incoming to releases/id"]
@@ -330,7 +333,9 @@ flowchart TD
   LOCK -->|"no"| FAIL
   LOCK -->|"yes"| CLEAN --> INCOMING
   INCOMING -->|"no"| FAIL
-  INCOMING -->|"yes"| MAINT --> BOUNDARIES --> MOVE --> CLAIMS --> PROTECTED
+  INCOMING -->|"yes"| RELEASE
+  RELEASE -->|"yes"| FAIL
+  RELEASE -->|"no"| MAINT --> BOUNDARIES --> MOVE --> CLAIMS --> PROTECTED
   PROTECTED -->|"yes"| FAIL
   PROTECTED -->|"no"| OLD --> REMOVED --> RECONCILE --> SWITCH --> ASSERT
   ASSERT -->|"no"| FAIL
@@ -358,6 +363,7 @@ Promotion phases:
 | Phase | Reads | Writes | Intent |
 | --- | --- | --- | --- |
 | Lock and retry cleanup | `deploy.lock`, `exchanged_paths` | lock file, removed stale exchange temp paths | Ensure only one deploy for a deployment id mutates the namespace and retry previous cleanup. |
+| Existing release guard | `releases/<id>` | none | Fail before maintenance and claim work if the generated release id already exists. |
 | Maintenance marker | configured maintenance path | tool-owned PHP marker | Ask WordPress to serve maintenance mode during promotion and hooks. |
 | Incoming to release | `incoming/<id>` | `releases/<id>` | Move complete staged content into the release namespace before public links point at it. |
 | Claim computation | new release tree, current release tree, materialized public symlinks | in-memory claim sets | Determine which public paths must exist and which old owned paths can be removed. |
@@ -421,7 +427,9 @@ flowchart TD
   ENTRY{"entry is regular file or symlink?"}
   SKIP["skip"]
   PUBLIC["convert to slash public path"]
-  RUNTIME{"cache, upgrade, or maintenance path?"}
+  NEWLINE{"path contains newline?"}
+  INTERNAL{"inside .git or tool namespace?"}
+  RUNTIME{"runtime path and shared-path rejection enabled?"}
   MEDIA{"under uploads or blogs.dir?"}
   MEDIA_EXACT{"exact container path?"}
   MEDIA_SYMLINK{"repo symlink?"}
@@ -433,7 +441,11 @@ flowchart TD
 
   START --> WALK --> ENTRY
   ENTRY -->|"no"| SKIP
-  ENTRY -->|"yes"| PUBLIC --> RUNTIME
+  ENTRY -->|"yes"| PUBLIC --> NEWLINE
+  NEWLINE -->|"yes"| FAIL
+  NEWLINE -->|"no"| INTERNAL
+  INTERNAL -->|"yes"| SKIP
+  INTERNAL -->|"no"| RUNTIME
   RUNTIME -->|"yes"| FAIL
   RUNTIME -->|"no"| MEDIA
   MEDIA -->|"yes"| MEDIA_EXACT

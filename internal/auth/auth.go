@@ -8,7 +8,7 @@ import (
 
 func GitSSHCommand(keyPath string) string {
 	// IdentitiesOnly prevents ssh-agent from offering unrelated keys first.
-	// BatchMode keeps deploy/update cron-safe by failing instead of prompting.
+	// BatchMode keeps deploy cron-safe by failing instead of prompting.
 	// accept-new gives first-contact trust-on-first-use without editing ~/.ssh.
 	return "ssh -i " + shellQuote(keyPath) +
 		" -o IdentitiesOnly=yes" +
