@@ -34,6 +34,25 @@ func TestComputeClaimsSharedMediaLeafFiles(t *testing.T) {
 	})
 }
 
+func TestComputeClaimsRejectsSharedMediaRootFiles(t *testing.T) {
+	for _, rel := range []string{"wp-content/uploads", "wp-content/blogs.dir"} {
+		t.Run(rel, func(t *testing.T) {
+			release := t.TempDir()
+			path := filepath.Join(release, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("not a directory\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := Compute(release, nil, true); err == nil {
+				t.Fatalf("expected shared media root file %q to fail", rel)
+			}
+		})
+	}
+}
+
 func TestComputeClaimsRejectsSharedRuntimePaths(t *testing.T) {
 	release := t.TempDir()
 	writeFile(t, release, "wp-content/cache/object.bin")

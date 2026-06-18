@@ -19,5 +19,3 @@ jobs:
         run: make check
       - name: Build static Linux binary
         run: make build
-      - name: Run preserved Bash reference suite
-        run: spec/tests/run.sh

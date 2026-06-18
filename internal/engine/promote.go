@@ -87,6 +87,12 @@ func Promote(options PromoteOptions) error {
 	if err := os.Rename(incoming, release); err != nil {
 		return err
 	}
+	cleanupReleaseOnFailure := true
+	defer func() {
+		if cleanupReleaseOnFailure {
+			_ = os.RemoveAll(release)
+		}
+	}()
 	if err := os.Chtimes(release, time.Now(), time.Now()); err != nil {
 		return err
 	}
@@ -108,6 +114,7 @@ func Promote(options PromoteOptions) error {
 	}
 	oldClaims = union(oldClaims, materialized)
 	removedClaims := claims.Removed(oldClaims, newClaims)
+	cleanupReleaseOnFailure = false
 	cleanupOverlappingRemovedClaims(options.Docroot, options.DeploymentID, removedClaims, newClaims)
 	if err := reconcileNewClaims(options.Docroot, options.DeploymentID, newClaims); err != nil {
 		return err

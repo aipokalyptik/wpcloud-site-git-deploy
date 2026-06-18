@@ -1,0 +1,40 @@
+# Go Testing Matrix
+
+This matrix is the source of truth for Go test coverage. Each row maps a
+behavior to local Go coverage, live WP Cloud/Pressable E2E coverage, or an
+intentional obsolete decision in the redesigned Go CLI/runtime model.
+
+Status values:
+
+- `go-local`: covered by Go unit, integration, static, or conformance tests.
+- `go-live`: covered by `scripts/live-e2e.sh`.
+- `obsolete`: intentionally not preserved because the Go rewrite changed the
+  CLI, config, state layout, or runtime model.
+
+| Area | Behavior | Status | Evidence |
+| --- | --- | --- | --- |
+| CLI syntax | Commands require flag-based deployment names and reject stray positional arguments | go-local | `internal/cli/parser_test.go:TestParseRejectsStrayArguments`; `internal/cli/parser_test.go:TestParseDeployRequiresName`; `internal/cli/parser_test.go:TestParseNameValidation` |
+| CLI refs | Deploy accepts default ref, branch, tag, or commit while rejecting conflicting refs | go-local, go-live | `internal/cli/parser_test.go:TestParseDeployAllowsDefaultRef`; `internal/cli/parser_test.go:TestParseDeployCapturesExplicitRefs`; `internal/cli/parser_test.go:TestParseDeployRejectsMultipleRefs`; `internal/cli/run_test.go:TestRunDeployUsesDefaultRef`; `scripts/live-e2e.sh` |
+| Config lifecycle | Init, list, status, config set/unset, and destroy operate on Go state | go-local, go-live | `internal/cli/run_test.go:TestRunInitListStatusConfigDestroy`; `internal/config/config_test.go:TestSaveLoadDeploymentConfig`; `scripts/live-e2e.sh` |
+| Config validation | Deployment config rejects unsafe names and invalid docroot/default settings | go-local | `internal/config/config_test.go:TestValidateDeploymentConfig`; `internal/config/config_test.go:TestValidateDeploymentConfigRejectsBadName` |
+| Auth key selection | Managed, imported, and explicit deploy keys generate the expected Git SSH command environment | go-local, go-live | `internal/auth/auth_test.go:TestGitSSHCommandUsesConfiguredKey`; `internal/auth/auth_test.go:TestKeySourceChoice`; `internal/cli/run_test.go:TestRunAuthUseKeyRemoveAndDoctorOffline`; `internal/cli/run_test.go:TestRunAuthGenerateImportAndPurgeManagedKey`; `scripts/live-e2e.sh` |
+| Auth URL conversion | HTTPS GitHub-style repository URLs can be converted to SSH form and non-HTTPS URLs are rejected | go-local | `internal/auth/auth_test.go:TestHTTPSURLToSSH`; `internal/auth/auth_test.go:TestHTTPSURLToSSHRejectsNonHTTPS` |
+| Doctor diagnostics | Doctor reports command/config failures and allows warning-only reports | go-local, go-live | `internal/doctor/doctor_test.go:TestReportFailsWhenFailureRecorded`; `internal/doctor/doctor_test.go:TestReportSucceedsWithWarnings`; `internal/cli/run_test.go:TestRunAuthUseKeyRemoveAndDoctorOffline`; `scripts/live-e2e.sh` |
+| Command execution | External command discovery and environment propagation are validated | go-local | `internal/execx/execx_test.go:TestRequireCommandsReportsMissing`; `internal/execx/execx_test.go:TestRunCapturesOutputAndEnvironment` |
+| State layout | Deployment and docroot state paths remain deterministic | go-local | `internal/state/state_test.go:TestLayoutPaths`; `internal/state/state_test.go:TestDocrootLayoutPaths` |
+| Release metadata | Release IDs, metadata, current-release lookup, and pruning behavior are stable | go-local, go-live | `internal/releases/releases_test.go:TestReleaseIDIncludesTimestampCommitAndRandomSuffix`; `internal/releases/releases_test.go:TestCurrentReleaseMatchesCommitAndDeployRoot`; `internal/releases/releases_test.go:TestSaveLoadMetadata`; `internal/releases/releases_test.go:TestPruneKeepsActiveAndNewest`; `scripts/live-e2e.sh` |
+| Claims | Release-tree claims honor top-level files, sticky boundaries, shared media leaves, and deployment namespace skips | go-local | `internal/claims/claims_test.go:TestComputeClaimsTopLevelAndStickyBoundary`; `internal/claims/claims_test.go:TestComputeClaimsSharedMediaLeafFiles`; `internal/claims/claims_test.go:TestComputeClaimsSkipsDeploymentNamespaceAndGit`; `internal/claims/claims_test.go:TestRemovedClaims` |
+| Shared path safety | Runtime shared paths and shared-media symlinks are rejected | go-local, go-live | `internal/claims/claims_test.go:TestComputeClaimsRejectsSharedRuntimePaths`; `internal/claims/claims_test.go:TestComputeClaimsRejectsSharedMediaSymlink`; `internal/engine/promote_test.go:TestPromoteAllowsSharedMediaLeafAndRejectsSharedRuntimePath`; `scripts/live-e2e.sh` |
+| Public symlink safety | Public symlink targets are relative, under docroot, and never under `$HOME` | go-local | `internal/publicfs/publicfs_test.go:TestPublicSymlinkTargetIsRelative`; `internal/publicfs/publicfs_test.go:TestAssertSymlinkUnderDocroot`; `internal/publicfs/publicfs_test.go:TestAssertSymlinkRejectsAbsoluteTarget`; `internal/publicfs/publicfs_test.go:TestAssertSymlinkRejectsOutsideDocroot`; `internal/publicfs/publicfs_test.go:TestAssertSymlinkRejectsHomeTarget` |
+| Atomic path exchange | Existing paths can be exchanged by the Linux helper integration boundary | go-local, go-live | `internal/publicfs/exchange_test.go:TestExchangePaths`; `scripts/live-e2e.sh` |
+| Promotion | Promotion creates public symlinks, updates current, reclaims existing files, and rejects unsafe foreign ancestors | go-local, go-live | `internal/engine/promote_test.go:TestPromoteCreatesPublicSymlinkAndCurrent`; `internal/engine/promote_test.go:TestPromoteReclaimsExistingFile`; `internal/engine/promote_test.go:TestPromoteAllowsExactForeignTakeover`; `internal/engine/promote_test.go:TestPromoteRejectsForeignAncestor`; `scripts/live-e2e.sh` |
+| Boundary discovery | Boundary and protected-anchor discovery require privileged ownership and effective writability | go-local | `internal/engine/promote_test.go:TestDiscoverBoundaryClaimsRequiresPrivilegedOwnership`; `internal/engine/promote_test.go:TestDiscoverProtectedAnchorsRequiresPrivilegedOwnership`; `internal/engine/promote_test.go:TestStickyBoundaryPredicateRequiresPrivilegedOwnership`; `internal/engine/promote_test.go:TestProtectedAnchorPredicateRequiresPrivilegedOwnershipAndEffectiveWritability` |
+| Post-deploy maintenance | Post-deploy commands run with WordPress maintenance marker handling and clean up on failure | go-local, go-live | `internal/engine/promote_test.go:TestPromoteRunsPostDeployWithWordPressMaintenanceMarker`; `internal/engine/promote_test.go:TestPromotePostDeployFailureKeepsReleaseCurrentAndRemovesMaintenance`; `scripts/live-e2e.sh` |
+| Deploy and rollback | Local deploy performs branch deploy/no-op behavior and rollback switches current release | go-local, go-live | `internal/engine/deploy_test.go:TestDeployBranchAndNoOp`; `internal/engine/deploy_test.go:TestRollbackToRelease`; `scripts/live-e2e.sh` |
+| Locking | A second process cannot acquire an already-held deployment lock | go-local | `internal/lock/lock_test.go:TestAcquireRejectsSecondLock` |
+| Go conformance harness | Built Go binary is exercised by black-box checks independent of legacy shell entrypoints | go-local | `tests/go_conformance.sh`; `make conformance` |
+| Live deploy matrix | Disposable-site E2E covers deploy, no-op, force, deploy roots, post-deploy, shared path safety, tag/commit deploys, submodules, deploy-key auth, doctor, rollback, inspection, and Git LFS hydration | go-live | `scripts/live-e2e.sh` |
+| Static live E2E guard | Maintained live E2E script stays free of obsolete text and expected scenario labels remain present | go-local | `tests/test_live_e2e_static.sh`; `make check` |
+| Positional deployment names | Old positional forms such as `deploy site`, `update site`, and `config site --post-deploy` are not part of the Go CLI | obsolete | `internal/cli/parser_test.go:TestParseRejectsStrayArguments`; `README.md` |
+| Legacy update command | `update` is replaced by `deploy --name NAME` using the configured default ref | obsolete | `README.md`; `internal/cli/parser_test.go:TestParseRejectsMissingCommand` |
+| Legacy hidden entrypoints | Internal shell helper entrypoints are not exposed by the Go CLI | obsolete | `cmd/wpcloud-site-git-deploy/main.go`; `internal/cli/parser_test.go` |

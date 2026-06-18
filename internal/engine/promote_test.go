@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
 )
@@ -150,6 +152,37 @@ func TestPromoteAllowsSharedMediaLeafAndRejectsSharedRuntimePath(t *testing.T) {
 	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r2", KeepReleases: 3}); err == nil || !strings.Contains(err.Error(), "shared path cannot be deployed") {
 		t.Fatalf("expected shared cache rejection, got %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "releases", "r2")); !os.IsNotExist(err) {
+		t.Fatalf("rejected pre-public release should be cleaned up, err=%v", err)
+	}
+}
+
+func TestPromoteLeavesParentDirectoriesAfterRemovingClaim(t *testing.T) {
+	docroot := t.TempDir()
+	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
+	writeFile(t, incoming, "wp-content/plugins/demo/plugin.php", "old\n")
+	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r1", KeepReleases: 3, Boundaries: []string{"wp-content/plugins"}}); err != nil {
+		t.Fatalf("first promote failed: %v", err)
+	}
+
+	incoming = filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r2")
+	writeFile(t, incoming, "index.html", "new\n")
+	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r2", KeepReleases: 3, Boundaries: []string{"wp-content/plugins"}}); err != nil {
+		t.Fatalf("second promote failed: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(docroot, "wp-content", "plugins", "demo")); !os.IsNotExist(err) {
+		t.Fatalf("removed claim symlink should be gone, err=%v", err)
+	}
+	for _, rel := range []string{"wp-content", "wp-content/plugins"} {
+		info, err := os.Stat(filepath.Join(docroot, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("parent directory %q should remain: %v", rel, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("parent path %q should remain a directory", rel)
+		}
+	}
 }
 
 func TestDiscoverBoundaryClaimsRequiresPrivilegedOwnership(t *testing.T) {
@@ -183,15 +216,46 @@ func TestDiscoverProtectedAnchorsRequiresPrivilegedOwnership(t *testing.T) {
 	}
 }
 
-func TestProtectedAnchorPredicateUsesEffectiveWritability(t *testing.T) {
-	if !protectedAnchorCandidate(0, uint32(os.Getgid()), false) {
-		t.Fatal("root-owned path that the site user cannot write should be protected")
+func TestStickyBoundaryPredicateRequiresPrivilegedOwnership(t *testing.T) {
+	tests := []struct {
+		name string
+		uid  uint32
+		gid  uint32
+		want bool
+	}{
+		{name: "root owned", uid: 0, gid: uint32(os.Getgid()), want: true},
+		{name: "root group", uid: uint32(os.Getuid()), gid: 0, want: true},
+		{name: "site user", uid: uint32(os.Getuid()), gid: uint32(os.Getgid()), want: false},
 	}
-	if protectedAnchorCandidate(uint32(os.Getuid()), uint32(os.Getgid()), false) {
-		t.Fatal("non-root-owned path should not be protected even when not writable")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := fakeFileInfo{sys: &syscall.Stat_t{Uid: tt.uid, Gid: tt.gid}}
+			if got := rootOwnedOrRootGroup(info); got != tt.want {
+				t.Fatalf("rootOwnedOrRootGroup() = %v, want %v", got, tt.want)
+			}
+		})
 	}
-	if protectedAnchorCandidate(0, uint32(os.Getgid()), true) {
-		t.Fatal("root-owned path writable by the site user should not be protected")
+}
+
+func TestProtectedAnchorPredicateRequiresPrivilegedOwnershipAndEffectiveWritability(t *testing.T) {
+	tests := []struct {
+		name     string
+		uid      uint32
+		gid      uint32
+		writable bool
+		want     bool
+	}{
+		{name: "root owned not writable", uid: 0, gid: uint32(os.Getgid()), writable: false, want: true},
+		{name: "root group not writable", uid: uint32(os.Getuid()), gid: 0, writable: false, want: true},
+		{name: "site user not writable", uid: uint32(os.Getuid()), gid: uint32(os.Getgid()), writable: false, want: false},
+		{name: "root owned writable", uid: 0, gid: uint32(os.Getgid()), writable: true, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := protectedAnchorCandidate(tt.uid, tt.gid, tt.writable); got != tt.want {
+				t.Fatalf("protectedAnchorCandidate() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -223,3 +287,14 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+type fakeFileInfo struct {
+	sys any
+}
+
+func (fakeFileInfo) Name() string       { return "fake" }
+func (fakeFileInfo) Size() int64        { return 0 }
+func (fakeFileInfo) Mode() os.FileMode  { return 0 }
+func (fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (fakeFileInfo) IsDir() bool        { return true }
+func (f fakeFileInfo) Sys() any         { return f.sys }

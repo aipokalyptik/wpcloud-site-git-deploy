@@ -3,17 +3,16 @@
 `wpcloud-site-git-deploy` is a clean-room, statically compiled Go deploy tool
 for WP Cloud-style sites.
 
-The previous Bash implementation is preserved under `spec/` as the behavioral
-oracle. The Go implementation is intentionally not a line-by-line port: command
-parsing, config, state, claim reconciliation, symlink validation, and atomic path
-exchange are split into reviewable Go packages.
+The implementation is intentionally split into reviewable Go packages for
+command parsing, config, state, claim reconciliation, symlink validation, and
+atomic path exchange.
 
 ## Current Shape
 
 - Go module: `github.com/aipokalyptik/wpcloud-site-git-deploy`
 - Binary entrypoint: `cmd/wpcloud-site-git-deploy`
-- Bash reference implementation and tests: `spec/`
-- Correctness contract: `spec/invariants.md`
+- Correctness coverage: Go unit/integration tests, the Go conformance harness,
+  the testing matrix, and the live E2E matrix
 
 The hard environmental invariant remains unchanged: public docroot symlinks must
 be relative and must resolve under the docroot. WP Cloud mounts `$HOME` for SSH
@@ -36,6 +35,7 @@ write into `$HOME`:
 ```bash
 make build      # static Linux amd64 binary in dist/
 make check      # Go tests, vet, shell syntax, shellcheck, and diff checks
+make conformance # black-box Go binary conformance checks
 make clean      # remove generated build/cache artifacts
 make live-e2e   # run the disposable-site E2E matrix
 ```
@@ -68,14 +68,15 @@ go test ./...
 go vet ./...
 ```
 
-Run the preserved Bash oracle on Linux:
+Run the local Makefile check suite:
 
 ```bash
-spec/tests/run.sh
+make check
 ```
 
-`spec/tests/run.sh` requires Linux/GNU tooling. macOS developers should run it
-in Linux CI, a Linux VM/container, or on a disposable WP Cloud/Pressable site.
+`make check` runs Go tests, `go vet`, maintained shell syntax checks,
+`shellcheck`, the Go conformance harness, static live-E2E script checks, and
+diff whitespace checks.
 
 Run the Go live E2E matrix against the disposable WP Cloud/Pressable site
 configured in `.env.local`:
@@ -131,5 +132,5 @@ Go CLI.
 
 ## Reference Docs
 
-The Bash-era user documentation remains in `spec/docs/` so the oracle remains
-understandable while the Go implementation reaches parity.
+The supported user-facing behavior is documented by this README, the Go testing
+matrix, and the live E2E matrix.

@@ -65,3 +65,47 @@ func TestAssertSymlinkRejectsHomeTarget(t *testing.T) {
 		t.Fatal("expected HOME-containing target to fail")
 	}
 }
+
+func TestAssertAllPublicSymlinksRejectsAbsoluteTarget(t *testing.T) {
+	docroot := t.TempDir()
+	if err := os.Symlink("/etc/passwd", filepath.Join(docroot, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AssertAllPublicSymlinksUnderDocroot(docroot, ""); err == nil {
+		t.Fatal("expected absolute public symlink target to fail")
+	}
+}
+
+func TestAssertAllPublicSymlinksRejectsHomeTarget(t *testing.T) {
+	docroot := t.TempDir()
+	target := filepath.Join(docroot, "releases", "home-marker", "index.html")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("releases/home-marker/index.html", filepath.Join(docroot, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AssertAllPublicSymlinksUnderDocroot(docroot, "home-marker"); err == nil {
+		t.Fatal("expected HOME-containing public symlink target to fail")
+	}
+}
+
+func TestAssertAllPublicSymlinksRejectsOutsideDocroot(t *testing.T) {
+	docroot := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", filepath.Base(outside), "secret"), filepath.Join(docroot, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AssertAllPublicSymlinksUnderDocroot(docroot, ""); err == nil {
+		t.Fatal("expected public symlink resolving outside docroot to fail")
+	}
+}
