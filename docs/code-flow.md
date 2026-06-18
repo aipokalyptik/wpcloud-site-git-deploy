@@ -158,6 +158,89 @@ flowchart TD
 Without `--force`, both become no-ops when the resolved commit already matches
 the current release metadata.
 
+## Deploy Decision Flow
+
+```mermaid
+flowchart TD
+  START["deploy_ref starts with resolved config L1167-L1190"] --> SAME{"Current release already matches commit and --force is absent? L1192"}
+  SAME -->|yes| NOOP["Return no-op without creating a release L1193-L1195"]
+  SAME -->|no| WORKTREE["Create detached Git worktree for resolved commit L1198"]
+
+  WORKTREE --> FEATURES{"Repository needs extra Git hydration? L798-L850"}
+  FEATURES -->|submodules| SUBMODULES["Initialize submodules recursively L799"]
+  FEATURES -->|Git LFS paths| LFS["Require git-lfs, pull LFS objects, and reject unresolved pointers L833-L850"]
+  FEATURES -->|neither or done| DEPLOYROOT{"deploy_root configured? L1031"}
+  SUBMODULES --> DEPLOYROOT
+  LFS --> DEPLOYROOT
+
+  DEPLOYROOT -->|yes| ROOTSUBDIR["Treat that subdirectory as the release root L1032-L1039"]
+  DEPLOYROOT -->|no| ROOTREPO["Treat repository root as the release root"]
+  ROOTSUBDIR --> EXCLUDES["Create default rsync exclude file L1032"]
+  ROOTREPO --> EXCLUDES
+
+  EXCLUDES --> COPY["rsync into incoming release with --delete and default excludes L1040-L1044"]
+  COPY --> LINKDEST{"Current release exists? L1020-L1022"}
+  LINKDEST -->|yes| HARDLINK["Use --link-dest so unchanged files hardlink to current release L1042"]
+  LINKDEST -->|no| NEWCOPY["Copy files normally into incoming release"]
+  HARDLINK --> ENGINE["Enter internal promotion engine L1203"]
+  NEWCOPY --> ENGINE
+
+  ENGINE --> LOCK{"Deployment lock acquired? L3404"}
+  LOCK -->|no| BUSY["Fail: deployment already running L2512"]
+  LOCK -->|yes| MAINT{"Maintenance file enabled? L3419"}
+  MAINT -->|yes| MARKER["Create WordPress maintenance marker before public claims change L3419"]
+  MAINT -->|no| CLAIMS["Prepare claim transition L3420"]
+  MARKER --> CLAIMS
+
+  CLAIMS --> SCAN["Scan boundaries, protected anchors, old claims, public symlinks, and new release files L3211-L3228"]
+  SCAN --> PATHPOLICY{"For each new public path, what policy applies? L3122-L3182"}
+  PATHPOLICY -->|default excluded before rsync| ABSENT["Path is absent from incoming release and cannot be claimed"]
+  PATHPOLICY -->|deployment namespace| REJECTNAMESPACE["Reject deploy namespace claim L3161"]
+  PATHPOLICY -->|cache, upgrade, or maintenance runtime path| REJECTSHARED["Reject fully shared runtime path L3168"]
+  PATHPOLICY -->|uploads/blogs.dir regular file| LEAF["Claim exact leaf file only L3171-L3182"]
+  PATHPOLICY -->|uploads/blogs.dir symlink or directory claim| REJECTMEDIA["Reject shared media container symlink or container claim L3173-L3182"]
+  PATHPOLICY -->|normal path under sticky boundary| COMPRESS["claim_for_path keeps next child under deepest boundary L3060-L3081"]
+  PATHPOLICY -->|normal path without boundary| EXACT["claim_for_path returns the top-level public path component L3084-L3085"]
+
+  LEAF --> PROTECTED{"Claim conflicts with protected anchor? L3227"}
+  COMPRESS --> PROTECTED
+  EXACT --> PROTECTED
+  PROTECTED -->|yes| REJECTPROTECTED["Fail before promotion"]
+  PROTECTED -->|no| MOVE["Move incoming release into releases/<release-id> L3421"]
+
+  MOVE --> RECONCILE["Apply claim transition L3425"]
+  RECONCILE --> OVERLAP["Remove overlapping old symlinks that would block new paths L3248"]
+  OVERLAP --> EACHCLAIM{"For each new claim L3249"}
+  EACHCLAIM --> FOREIGN{"Owned by another deployment? L2618-L2621"}
+  FOREIGN -->|yes| REJECTFOREIGN["Fail before stealing another deployment's path"]
+  FOREIGN -->|no| EXISTING{"Public path already exists? L2625-L2649"}
+  EXISTING -->|no| LINK["Create docroot-relative symlink to current release file L2657-L2664"]
+  EXISTING -->|yes| SWAP{"Can reclaim with mv --exchange? L2639-L2643"}
+  SWAP -->|yes| MVEXCHANGE["Atomically exchange existing path with new symlink L2639-L2643"]
+  SWAP -->|no| HELPER["Use exchange-rename helper L2645-L2649"]
+  LINK --> CURRENT["Atomically switch current to releases/<release-id> L3250"]
+  MVEXCHANGE --> CURRENT
+  HELPER --> CURRENT
+
+  CURRENT --> REMOVEOLD["Remove symlinks for claims no longer owned L3259"]
+  REMOVEOLD --> ASSERT["Assert final owned claim symlinks are relative and resolve under docroot L3260"]
+  ASSERT --> POST{"Post-deploy hook configured or provided? L3426"}
+  POST -->|yes| HOOK["Run hook after current flips and before pruning L3426"]
+  POST -->|no| CLEANMARKER["Remove owned maintenance marker L3431"]
+  HOOK -->|success| CLEANMARKER
+  HOOK -->|failure| FAILACTIVE["Exit nonzero with the new release still active"]
+  CLEANMARKER --> PRUNE["Prune old kept releases L3433"]
+  PRUNE --> METADATA["Write release metadata after engine returns L1207"]
+  METADATA --> CLEANWORKTREE["Clean temp Git worktree L1211"]
+```
+
+This is the operational deploy view rather than the function-call view. Default
+excludes are applied while building the incoming release, so excluded files never
+enter claim computation. Claims decide what public paths this deployment owns.
+Claim application creates or swaps public symlinks first, then atomically moves
+`current` to the new release. The post-deploy hook runs after `current` changes;
+if it fails, the new release remains active and the command exits nonzero.
+
 ## Worktree Preparation
 
 ```mermaid
