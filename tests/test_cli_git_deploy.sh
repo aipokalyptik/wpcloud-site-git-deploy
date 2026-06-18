@@ -352,18 +352,13 @@ HOME="$conflict_home_dir" "$cli" init conflict \
   --docroot "$docroot" \
   --deployment-id conflict \
   --default-ref main >/dev/null
-if HOME="$conflict_home_dir" "$cli" deploy conflict --tag v1 >"$tmpdir/conflict-deploy.txt" 2>&1; then
-  fail "foreign-claim promotion should fail"
-fi
-assert_contains "claim owned by another deployment:" "$tmpdir/conflict-deploy.txt"
-[[ ! -d "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict" ]] || fail "failed promotion should remove temp worktree"
-if [[ -d "$docroot/.wpcloud-site-git-deploy/deployments/conflict/incoming" ]]; then
-  conflict_incoming_count="$(find "$docroot/.wpcloud-site-git-deploy/deployments/conflict/incoming" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
-  [[ "$conflict_incoming_count" == "0" ]] || fail "failed promotion should remove incoming release"
-fi
+HOME="$conflict_home_dir" "$cli" deploy conflict --tag v1 >"$tmpdir/conflict-deploy.txt" 2>&1
+[[ "$(readlink "$docroot/index.html")" == ".wpcloud-site-git-deploy/deployments/conflict/current/index.html" ]] || fail "later deployment should reclaim exact foreign claim"
+grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "reclaimed exact foreign claim should publish the later deployment"
+[[ ! -d "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict" ]] || fail "successful conflict promotion should remove temp worktree"
 conflict_repo_cache="$conflict_home_dir/.wpcloud-site-git-deploy/repos/conflict"
 if git -C "$conflict_repo_cache" worktree list --porcelain | grep -Fq "$conflict_home_dir/.wpcloud-site-git-deploy/tmp/conflict/"; then
-  fail "failed promotion should remove temp worktree from git registry"
+  fail "successful conflict promotion should remove temp worktree from git registry"
 fi
 
 second_deploy="$(HOME="$home_dir" "$cli" deploy site --branch feature)"

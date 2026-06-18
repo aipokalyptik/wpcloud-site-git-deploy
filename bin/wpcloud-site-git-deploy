@@ -2617,7 +2617,6 @@ reconcile_new_claims() {
 
     reject_foreign_deployment_ancestor_claim "$docroot" "$deployment_id" "$claim"
     mkdir -p -- "$parent_dir"
-    reject_foreign_deployment_claim "$deployment_id" "$claim" "$public_path"
     reject_foreign_deployment_descendant_claim "$deployment_id" "$claim" "$public_path"
     rm -f -- "$tmp_link"
     ln -s "$target" "$tmp_link"
@@ -2694,25 +2693,6 @@ deployment_owner_from_target() {
   return 1
 }
 
-reject_foreign_deployment_claim() {
-  local deployment_id="$1"
-  local claim="$2"
-  local public_path="$3"
-  local target
-  local owner
-
-  if [[ ! -L "$public_path" ]]; then
-    return 0
-  fi
-
-  target="$(readlink "$public_path")"
-  if owner="$(deployment_owner_from_target "$target")"; then
-    if [[ "$owner" != "$deployment_id" ]]; then
-      engine_die "claim owned by another deployment: $claim"
-    fi
-  fi
-}
-
 reject_foreign_deployment_ancestor_claim() {
   local docroot="$1"
   local deployment_id="$2"
@@ -2723,8 +2703,10 @@ reject_foreign_deployment_ancestor_claim() {
   local target
   local owner
 
-  # Layered deployments are allowed only when their public paths do not overlap.
-  # A foreign ancestor symlink would route this claim into another deployment.
+  # An exact foreign symlink is just an existing public path and can be reclaimed
+  # below. A foreign ancestor symlink is different: it would route this claim into
+  # another deployment's current release instead of creating this deployment's
+  # own public path.
   while [[ "$remainder" == */* ]]; do
     # Walk from left to right through the claim: take the next component before
     # the slash, then leave the unvisited suffix in remainder.

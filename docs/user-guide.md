@@ -456,15 +456,24 @@ The theme repository should contain only the paths it is meant to own, such as
 `wp-content/themes/example-theme/...`. The plugin repository should contain only
 its plugin paths, such as `wp-content/plugins/example-plugin/...`.
 
-If two deployments try to claim the same path or overlapping paths, promotion
-fails with a message such as:
+If two deployments claim the exact same public path, the later successful deploy
+takes over that path, just like it would take over a normal existing file at that
+location. That is intentional: if the same file exists in two repositories, the
+operator has asked the later deployment to publish it.
+
+Containment overlaps are still rejected. For example, one deployment should not
+own `wp-content/plugins/example-plugin` while another tries to deploy a child
+inside that symlinked tree, or tries to replace a real directory containing
+another deployment's symlinks. Those cases can route one deployment through
+another deployment's `current` release or engulf a nested deployment. They fail
+with a message such as:
 
 ```text
 claim owned by another deployment: wp-content/plugins/example-plugin
 ```
 
-That failure is intentional. Fix the repository contents or deploy roots so
-each deployment owns a distinct path.
+That failure is intentional. Fix the repository contents or deploy roots so the
+deployments do not nest inside each other.
 
 ## Git LFS And Submodules
 
@@ -546,8 +555,10 @@ Common failures:
 - `protected path: wp-load.php`: the repository is trying to own a host-owned
   WordPress anchor. Remove that path from the repository or deploy a narrower
   subdirectory.
-- `claim owned by another deployment`: two deployment namespaces overlap.
-  Split the paths so each deployment owns a distinct subtree.
+- `claim owned by another deployment`: one deployment is trying to publish
+  through another deployment's ancestor symlink. Split the paths so deployments
+  do not nest inside each other. Exact same-path collisions are allowed and the
+  later successful deploy takes over the public path.
 - `could not read Username for 'https://...'`: a private HTTPS repo or
   submodule needs credentials. Prefer SSH deploy keys for unattended deploys,
   or configure non-interactive HTTPS credentials for the site user.

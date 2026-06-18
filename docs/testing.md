@@ -58,8 +58,8 @@ behavior and either native `mv --exchange` or the static Linux amd64
 
 Run the live matrix before treating release-critical deploy changes as ready.
 Use a disposable site because the matrix intentionally mutates docroot content,
-tests rollback, tests protected-path rejection, and verifies cross-deployment
-isolation.
+tests rollback, tests protected-path rejection, verifies same-path deployment
+takeover, and verifies cross-deployment containment isolation.
 
 The maintained live matrix is:
 
@@ -139,8 +139,10 @@ Expected failures in that run:
 - Protected anchor deploy failed with `protected path: wp-load.php`.
 - Shared media container regular files deployed as leaf symlinks, and shared
   runtime/control path deploys failed with `shared path cannot be deployed: ...`.
-- Foreign-layer deploy failed with
-  `claim owned by another deployment: layer-owned`.
+- Foreign-layer containment deploy failed with
+  `claim owned by another deployment: layer-owned`. Exact same-path deployment
+  collisions are allowed; the later successful deploy takes over the public
+  path.
 
 Those failures are guardrails, not regressions.
 

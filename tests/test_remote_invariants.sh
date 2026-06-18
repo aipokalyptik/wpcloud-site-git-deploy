@@ -163,10 +163,9 @@ mkdir -p "$foreign_incoming"
 printf 'ok\n' >"$foreign_incoming/index.html"
 mkdir -p "$foreign_docroot"
 ln -s ".wpcloud-site-git-deploy/deployments/other/current/index.html" "$foreign_docroot/index.html"
-if "${remote[@]}" --docroot "$foreign_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null 2>"$tmpdir/foreign-owner.log"; then
-  fail "namespace symlink owned by another deployment should be rejected"
-fi
-grep -Fq -- "claim owned by another deployment: index.html" "$tmpdir/foreign-owner.log" || fail "unexpected foreign-owner rejection"
+"${remote[@]}" --docroot "$foreign_docroot" --deployment-id site --release-id release-one --keep-releases 2 >/dev/null
+[[ "$(readlink "$foreign_docroot/index.html")" == ".wpcloud-site-git-deploy/deployments/site/current/index.html" ]] || fail "exact foreign namespace symlink should be reclaimed by the requested deployment"
+grep -Fxq -- "ok" "$foreign_docroot/index.html" || fail "reclaimed exact foreign symlink should serve the new deployment"
 
 assert_shared_path_fails() {
   local name="$1"

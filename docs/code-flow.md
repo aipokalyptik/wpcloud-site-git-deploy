@@ -14,8 +14,8 @@ lines; other line numbers point to where the diagrammed action happens in
 ```mermaid
 flowchart TD
   A["Process starts L1"] --> B["Set constants and state paths L4-L57"]
-  B --> C["main() L3551"]
-  C --> D["Dispatch on first argument L3557"]
+  B --> C["main() L3531"]
+  C --> D["Dispatch on first argument L3537"]
 
   D -->|init| INIT["cmd_init L1850"]
   D -->|config| CONFIG["cmd_config L1802"]
@@ -29,9 +29,9 @@ flowchart TD
   D -->|status| STATUS["cmd_status L2114"]
   D -->|auth| AUTH["cmd_auth L1629"]
   D -->|doctor| DOCTOR["cmd_doctor L1753"]
-  D -->|__remote-deploy| HIDDEN["cmd_remote_deploy L3438"]
-  D -->|--help| HELP["usage L3598"]
-  D -->|--version| VERSION["Print VERSION L3601"]
+  D -->|__remote-deploy| HIDDEN["cmd_remote_deploy L3418"]
+  D -->|--help| HELP["usage L3578"]
+  D -->|--version| VERSION["Print VERSION L3581"]
 ```
 
 The final dispatcher is the only public entry point. Deploy and rollback call the
@@ -185,51 +185,51 @@ flowchart TD
   HARDLINK --> ENGINE["Enter internal promotion engine L1203"]
   NEWCOPY --> ENGINE
 
-  ENGINE --> LOCK{"Deployment lock acquired? L3404"}
+  ENGINE --> LOCK{"Deployment lock acquired? L3384"}
   LOCK -->|no| BUSY["Fail: deployment already running L2512"]
-  LOCK -->|yes| MAINT{"Maintenance file enabled? L3419"}
-  MAINT -->|yes| MARKER["Create WordPress maintenance marker before public claims change L3419"]
-  MAINT -->|no| CLAIMS["Prepare claim transition L3420"]
+  LOCK -->|yes| MAINT{"Maintenance file enabled? L3399"}
+  MAINT -->|yes| MARKER["Create WordPress maintenance marker before public claims change L3399"]
+  MAINT -->|no| CLAIMS["Prepare claim transition L3400"]
   MARKER --> CLAIMS
 
-  CLAIMS --> SCAN["Scan boundaries, protected anchors, old claims, public symlinks, and new release files L3211-L3228"]
-  SCAN --> PATHPOLICY{"For each new public path, what policy applies? L3122-L3182"}
+  CLAIMS --> SCAN["Scan boundaries, protected anchors, old claims, public symlinks, and new release files L3191-L3208"]
+  SCAN --> PATHPOLICY{"For each new public path, what policy applies? L3102-L3168"}
   PATHPOLICY -->|default excluded before rsync| ABSENT["Path is absent from incoming release and cannot be claimed"]
-  PATHPOLICY -->|deployment namespace| REJECTNAMESPACE["Reject deploy namespace claim L3161"]
-  PATHPOLICY -->|cache, upgrade, or maintenance runtime path| REJECTSHARED["Reject fully shared runtime path L3168"]
-  PATHPOLICY -->|uploads/blogs.dir regular file| LEAF["Claim exact leaf file only L3171-L3182"]
-  PATHPOLICY -->|uploads/blogs.dir symlink or directory claim| REJECTMEDIA["Reject shared media container symlink or container claim L3173-L3182"]
-  PATHPOLICY -->|normal path under sticky boundary| COMPRESS["claim_for_path keeps next child under deepest boundary L3060-L3081"]
-  PATHPOLICY -->|normal path without boundary| EXACT["claim_for_path returns the top-level public path component L3084-L3085"]
+  PATHPOLICY -->|deployment namespace| REJECTNAMESPACE["Reject deploy namespace claim L3141"]
+  PATHPOLICY -->|cache, upgrade, or maintenance runtime path| REJECTSHARED["Reject fully shared runtime path L3148"]
+  PATHPOLICY -->|uploads/blogs.dir regular file| LEAF["Claim exact leaf file only L3151-L3165"]
+  PATHPOLICY -->|uploads/blogs.dir symlink or directory claim| REJECTMEDIA["Reject shared media container symlink or container claim L3153-L3161"]
+  PATHPOLICY -->|normal path under sticky boundary| COMPRESS["claim_for_path keeps next child under deepest boundary L3040-L3061"]
+  PATHPOLICY -->|normal path without boundary| EXACT["claim_for_path returns the top-level public path component L3064-L3065"]
 
-  LEAF --> PROTECTED{"Claim conflicts with protected anchor? L3227"}
+  LEAF --> PROTECTED{"Claim conflicts with protected anchor? L3207"}
   COMPRESS --> PROTECTED
   EXACT --> PROTECTED
   PROTECTED -->|yes| REJECTPROTECTED["Fail before promotion"]
-  PROTECTED -->|no| MOVE["Move incoming release into releases/<release-id> L3421"]
+  PROTECTED -->|no| MOVE["Move incoming release into releases/<release-id> L3401"]
 
-  MOVE --> RECONCILE["Apply claim transition L3425"]
-  RECONCILE --> OVERLAP["Remove overlapping old symlinks that would block new paths L3248"]
-  OVERLAP --> EACHCLAIM{"For each new claim L3249"}
-  EACHCLAIM --> FOREIGN{"Owned by another deployment? L2618-L2621"}
-  FOREIGN -->|yes| REJECTFOREIGN["Fail before stealing another deployment's path"]
-  FOREIGN -->|no| EXISTING{"Public path already exists? L2625-L2649"}
+  MOVE --> RECONCILE["Apply claim transition L3405"]
+  RECONCILE --> OVERLAP["Remove overlapping old symlinks that would block new paths L3228"]
+  OVERLAP --> EACHCLAIM{"For each new claim L3229"}
+  EACHCLAIM --> CONTAINMENT{"Foreign ancestor or descendant deployment? L2618-L2620"}
+  CONTAINMENT -->|yes| REJECTFOREIGN["Fail before routing into or engulfing another deployment"]
+  CONTAINMENT -->|no| EXISTING{"Public path already exists? L2624-L2649"}
   EXISTING -->|no| LINK["Create docroot-relative symlink to current release file L2657-L2664"]
   EXISTING -->|yes| SWAP{"Can reclaim with mv --exchange? L2639-L2643"}
   SWAP -->|yes| MVEXCHANGE["Atomically exchange existing path with new symlink L2639-L2643"]
   SWAP -->|no| HELPER["Use exchange-rename helper L2645-L2649"]
-  LINK --> CURRENT["Atomically switch current to releases/<release-id> L3250"]
+  LINK --> CURRENT["Atomically switch current to releases/<release-id> L3230"]
   MVEXCHANGE --> CURRENT
   HELPER --> CURRENT
 
-  CURRENT --> REMOVEOLD["Remove symlinks for claims no longer owned L3259"]
-  REMOVEOLD --> ASSERT["Assert final owned claim symlinks are relative and resolve under docroot L3260"]
-  ASSERT --> POST{"Post-deploy hook configured or provided? L3426"}
-  POST -->|yes| HOOK["Run hook after current flips and before pruning L3426"]
-  POST -->|no| CLEANMARKER["Remove owned maintenance marker L3431"]
+  CURRENT --> REMOVEOLD["Remove symlinks for claims no longer owned L3239"]
+  REMOVEOLD --> ASSERT["Assert final owned claim symlinks are relative and resolve under docroot L3240"]
+  ASSERT --> POST{"Post-deploy hook configured or provided? L3406"}
+  POST -->|yes| HOOK["Run hook after current flips and before pruning L3406"]
+  POST -->|no| CLEANMARKER["Remove owned maintenance marker L3411"]
   HOOK -->|success| CLEANMARKER
   HOOK -->|failure| FAILACTIVE["Exit nonzero with the new release still active"]
-  CLEANMARKER --> PRUNE["Prune old kept releases L3433"]
+  CLEANMARKER --> PRUNE["Prune old kept releases L3413"]
   PRUNE --> METADATA["Write release metadata after engine returns L1207"]
   METADATA --> CLEANWORKTREE["Clean temp Git worktree L1211"]
 ```
@@ -277,22 +277,22 @@ root for that deployment.
 ```mermaid
 flowchart TD
   PROMOTE["promote_release L1143"] --> SUBSHELL["run_engine_subshell L1137"]
-  SUBSHELL --> ENGINE["cmd_remote_deploy --release-id L3438"]
-  ENGINE --> PARSE["Parse deploy mode arguments L3456-L3492"]
-  PARSE --> EXCHANGE["Probe mv --exchange once and cache ENGINE_MV_EXCHANGE L3516-L3523"]
-  EXCHANGE --> REQ["require_remote_capabilities L3530"]
-  REQ --> PATH["Run promote_release engine path L3532-L3534"]
+  SUBSHELL --> ENGINE["cmd_remote_deploy --release-id L3418"]
+  ENGINE --> PARSE["Parse deploy mode arguments L3436-L3472"]
+  PARSE --> EXCHANGE["Probe mv --exchange once and cache ENGINE_MV_EXCHANGE L3496-L3503"]
+  EXCHANGE --> REQ["require_remote_capabilities L3510"]
+  REQ --> PATH["Run promote_release engine path L3523"]
 
-  PATH --> LOCK["acquire_lock L3404"]
+  PATH --> LOCK["acquire_lock L3384"]
   LOCK -->|busy| BUSY["Fail: deployment already running L2512"]
-  LOCK -->|acquired| STALE["cleanup_owned_maintenance_file L3409"]
-  STALE --> MARKER["create_maintenance_file L3419"]
-  MARKER --> PREPARE["prepare_claim_transition L3420"]
-  PREPARE --> MOVE["Move incoming to releases/<release-id> L3421"]
-  MOVE --> APPLY["apply_claim_transition L3425"]
-  APPLY --> POST["run_post_deploy L3426"]
-  POST --> CLEAR["Remove owned maintenance marker L3431"]
-  CLEAR --> PRUNE["prune_releases L3433"]
+  LOCK -->|acquired| STALE["cleanup_owned_maintenance_file L3392"]
+  STALE --> MARKER["create_maintenance_file L3399"]
+  MARKER --> PREPARE["prepare_claim_transition L3400"]
+  PREPARE --> MOVE["Move incoming to releases/<release-id> L3401"]
+  MOVE --> APPLY["apply_claim_transition L3405"]
+  APPLY --> POST["run_post_deploy L3406"]
+  POST --> CLEAR["Remove owned maintenance marker L3411"]
+  CLEAR --> PRUNE["prune_releases L3413"]
   PRUNE --> RETURN["Engine subshell returns to deploy_ref L1203"]
 ```
 
@@ -304,22 +304,22 @@ already promoting the same deployment id, the later command fails with
 
 ```mermaid
 flowchart TD
-  PREPARE["prepare_claim_transition L3196"] --> BOUNDARY["discover_boundary_claims L3211"]
-  BOUNDARY --> PROTECTED["discover_protected_anchors L3212"]
-  PROTECTED --> CURRENT{"Current release exists? L3214"}
-  CURRENT -->|yes| OLD["compute_claims for old release L3216"]
-  CURRENT -->|no| EMPTY["Create empty old-claims file L3218"]
-  OLD --> MATERIALIZED["discover_materialized_public_claims L3224-L3225"]
+  PREPARE["prepare_claim_transition L3176"] --> BOUNDARY["discover_boundary_claims L3191"]
+  BOUNDARY --> PROTECTED["discover_protected_anchors L3192"]
+  PROTECTED --> CURRENT{"Current release exists? L3194"}
+  CURRENT -->|yes| OLD["compute_claims for old release L3196"]
+  CURRENT -->|no| EMPTY["Create empty old-claims file L3198"]
+  OLD --> MATERIALIZED["discover_materialized_public_claims L3204-L3205"]
   EMPTY --> MATERIALIZED
-  MATERIALIZED --> NEW["compute_claims for new release L3226"]
-  NEW --> SHARED{"Path policy inside compute_claims L3165-L3182"}
+  MATERIALIZED --> NEW["compute_claims for new release L3206"]
+  NEW --> SHARED{"Path policy inside compute_claims L3145-L3168"}
   SHARED -->|shared media regular file| LEAF["Keep exact leaf claim under uploads/blogs.dir"]
   SHARED -->|shared media symlink| REJECT1["Reject shared container symlink"]
   SHARED -->|cache/upgrade/.maintenance| REJECT2["Reject fully shared runtime path"]
   SHARED -->|normal path| NORMAL["Apply normal sticky-boundary compression"]
-  LEAF --> ANCHORS["reject_protected_anchors L3227"]
+  LEAF --> ANCHORS["reject_protected_anchors L3207"]
   NORMAL --> ANCHORS
-  ANCHORS --> REMOVED["compute_removed_claims L3228"]
+  ANCHORS --> REMOVED["compute_removed_claims L3208"]
 ```
 
 `wp-content/uploads` and `wp-content/blogs.dir` are WordPress-managed persistent
@@ -331,16 +331,16 @@ symlinks inside them.
 
 ```mermaid
 flowchart TD
-  APPLY["apply_claim_transition L3231"] --> EXCHANGED["Create exchanged_paths file L3241"]
-  EXCHANGED --> OVERLAP["cleanup_overlapping_removed_claims L3248"]
-  OVERLAP --> RECONCILE["reconcile_new_claims L3249"]
-  RECONCILE --> FOREIGN["Reject foreign deployment ancestor, exact, and descendant conflicts L2618-L2621"]
+  APPLY["apply_claim_transition L3211"] --> EXCHANGED["Create exchanged_paths file L3224"]
+  EXCHANGED --> OVERLAP["cleanup_overlapping_removed_claims L3228"]
+  OVERLAP --> RECONCILE["reconcile_new_claims L3229"]
+  RECONCILE --> FOREIGN["Reject foreign deployment ancestor and descendant containment conflicts L2618-L2620"]
   FOREIGN --> CREATE["Create public symlink or reclaim existing path L2625-L2649"]
-  CREATE --> SWITCH["switch_current L3250"]
-  SWITCH --> VERIFYCURRENT["Verify current points to releases/<release-id> L3251-L3253"]
-  VERIFYCURRENT --> CLEANEX["cleanup_exchanged_paths L3254"]
-  CLEANEX --> CLEANREMOVED["cleanup_removed_claims L3259"]
-  CLEANREMOVED --> ASSERT["assert_claim_symlinks_under_docroot L3260"]
+  CREATE --> SWITCH["switch_current L3230"]
+  SWITCH --> VERIFYCURRENT["Verify current points to releases/<release-id> L3231-L3233"]
+  VERIFYCURRENT --> CLEANEX["cleanup_exchanged_paths L3234"]
+  CLEANEX --> CLEANREMOVED["cleanup_removed_claims L3239"]
+  CLEANREMOVED --> ASSERT["assert_claim_symlinks_under_docroot L3240"]
 ```
 
 Promotion creates docroot-relative symlinks for owned claims and switches the
@@ -360,17 +360,17 @@ flowchart TD
   SELECT --> RUN["run_engine_subshell --rollback-to L1995"]
   CHOSEN --> RUN
 
-  RUN --> ENGINE["cmd_remote_deploy rollback mode L3438"]
-  ENGINE --> PARSE["Parse rollback mode arguments L3456-L3492"]
-  PARSE --> EXCHANGE["Probe mv --exchange once and cache ENGINE_MV_EXCHANGE L3516-L3523"]
-  EXCHANGE --> REQ["require_remote_capabilities L3530"]
-  REQ --> RBENG["rollback_release L3263"]
-  RBENG --> LOCK["acquire_lock L3285"]
+  RUN --> ENGINE["cmd_remote_deploy rollback mode L3418"]
+  ENGINE --> PARSE["Parse rollback mode arguments L3436-L3472"]
+  PARSE --> EXCHANGE["Probe mv --exchange once and cache ENGINE_MV_EXCHANGE L3496-L3503"]
+  EXCHANGE --> REQ["require_remote_capabilities L3510"]
+  REQ --> RBENG["rollback_release L3243"]
+  RBENG --> LOCK["acquire_lock L3265"]
   LOCK -->|busy| BUSY["Fail: deployment already running L2512"]
-  LOCK -->|acquired| MARKER["Clean stale marker and create rollback marker L3287-L3296"]
-  MARKER --> PREPARE["prepare_claim_transition L3297"]
-  PREPARE --> APPLY["apply_claim_transition L3298"]
-  APPLY --> CLEAR["Remove owned maintenance marker L3299"]
+  LOCK -->|acquired| MARKER["Clean stale marker and create rollback marker L3267-L3276"]
+  MARKER --> PREPARE["prepare_claim_transition L3277"]
+  PREPARE --> APPLY["apply_claim_transition L3278"]
+  APPLY --> CLEAR["Remove owned maintenance marker L3279"]
   CLEAR --> PRINT["Print rolled back release L1996"]
 ```
 
@@ -420,11 +420,11 @@ the cache before printing.
 
 ```mermaid
 flowchart TD
-  HIDDEN["cmd_remote_deploy L3438"] --> PARSE["Parse deploy, rollback, or audit arguments L3456-L3492"]
+  HIDDEN["cmd_remote_deploy L3418"] --> PARSE["Parse deploy, rollback, or audit arguments L3436-L3472"]
   PARSE --> MODE{"Mode"}
-  MODE -->|deploy| PROMOTE["promote_release engine path L3532-L3534"]
-  MODE -->|rollback| ROLLBACK["rollback_release engine path L3537-L3540"]
-  MODE -->|audit| AUDIT["assert_public_symlinks_under_docroot L3543"]
+  MODE -->|deploy| PROMOTE["promote_release engine path L3523"]
+  MODE -->|rollback| ROLLBACK["rollback_release engine path L3513-L3515"]
+  MODE -->|audit| AUDIT["assert_public_symlinks_under_docroot L3491"]
 
   AUDIT --> A1["Walk all public symlinks outside .wpcloud-site-git-deploy namespace L2367"]
   A1 --> A2["Reject absolute targets, HOME-containing targets, and targets resolving outside docroot L2377-L2399"]
