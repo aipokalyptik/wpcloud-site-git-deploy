@@ -3,7 +3,10 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
 )
 
 func TestPromoteCreatesPublicSymlinkAndCurrent(t *testing.T) {
@@ -70,6 +73,82 @@ func TestPromoteRejectsForeignAncestor(t *testing.T) {
 
 	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r1", KeepReleases: 3, Boundaries: []string{"wp-content/plugins"}}); err == nil {
 		t.Fatal("expected foreign ancestor to fail")
+	}
+}
+
+func TestPromoteRunsPostDeployWithWordPressMaintenanceMarker(t *testing.T) {
+	docroot := t.TempDir()
+	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
+	writeFile(t, incoming, "index.html", "hello\n")
+	hook := filepath.Join(docroot, "post-deploy.sh")
+	marker := filepath.Join(docroot, "marker.txt")
+	if err := os.WriteFile(hook, []byte("test -f .maintenance\ngrep -q '\\$upgrading' .maintenance\nprintf hook > marker.txt\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Promote(PromoteOptions{
+		Docroot:      docroot,
+		DeploymentID: "site",
+		ReleaseID:    "r1",
+		KeepReleases: 3,
+		PostDeploy:   hook,
+		Maintenance:  config.Maintenance{Enabled: true, File: ".maintenance"},
+	})
+	if err != nil {
+		t.Fatalf("promote failed: %v", err)
+	}
+	if got := string(mustRead(t, marker)); got != "hook" {
+		t.Fatalf("post deploy did not run: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(docroot, ".maintenance")); !os.IsNotExist(err) {
+		t.Fatalf("maintenance file should be removed, err=%v", err)
+	}
+}
+
+func TestPromotePostDeployFailureKeepsReleaseCurrentAndRemovesMaintenance(t *testing.T) {
+	docroot := t.TempDir()
+	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
+	writeFile(t, incoming, "index.html", "hello\n")
+	hook := filepath.Join(docroot, "post-deploy.sh")
+	if err := os.WriteFile(hook, []byte("exit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Promote(PromoteOptions{
+		Docroot:      docroot,
+		DeploymentID: "site",
+		ReleaseID:    "r1",
+		KeepReleases: 3,
+		PostDeploy:   hook,
+		Maintenance:  config.Maintenance{Enabled: true, File: ".maintenance"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "post-deploy failed") {
+		t.Fatalf("expected post-deploy failure, got %v", err)
+	}
+	if got := readlink(t, filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "current")); got != "releases/r1" {
+		t.Fatalf("release should remain current after hook failure, got %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(docroot, ".maintenance")); !os.IsNotExist(err) {
+		t.Fatalf("maintenance file should be removed after failure, err=%v", err)
+	}
+}
+
+func TestPromoteAllowsSharedMediaLeafAndRejectsSharedRuntimePath(t *testing.T) {
+	docroot := t.TempDir()
+	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
+	writeFile(t, incoming, "wp-content/uploads/static/logo.png", "image\n")
+	writeFile(t, incoming, "wp-content/blogs.dir/1/files/logo.png", "image\n")
+	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r1", KeepReleases: 3}); err != nil {
+		t.Fatalf("shared media leaf deploy failed: %v", err)
+	}
+	if got := readlink(t, filepath.Join(docroot, "wp-content/uploads/static/logo.png")); !strings.Contains(got, "current/wp-content/uploads/static/logo.png") {
+		t.Fatalf("unexpected uploads leaf target: %s", got)
+	}
+
+	incoming = filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r2")
+	writeFile(t, incoming, "wp-content/cache/object-cache.bin", "cache\n")
+	if err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r2", KeepReleases: 3}); err == nil || !strings.Contains(err.Error(), "shared path cannot be deployed") {
+		t.Fatalf("expected shared cache rejection, got %v", err)
 	}
 }
 

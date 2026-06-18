@@ -56,3 +56,31 @@ func AssertClaimSymlinksUnderDocroot(docroot string, claims []string, home strin
 	}
 	return nil
 }
+
+func AssertAllPublicSymlinksUnderDocroot(docroot, home string) error {
+	var claims []string
+	err := filepath.WalkDir(docroot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == filepath.Join(docroot, state.DocrootNamespace) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(docroot, path)
+		if err != nil {
+			return err
+		}
+		claims = append(claims, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return AssertClaimSymlinksUnderDocroot(docroot, claims, home)
+}

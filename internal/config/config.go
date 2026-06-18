@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 const SchemaVersion = 1
@@ -58,8 +59,38 @@ func (d Deployment) Validate() error {
 	if d.KeepReleases < 1 {
 		return errors.New("keep_releases must be at least 1")
 	}
+	if d.DeployRoot != "" {
+		if err := ValidateRelativePath("deploy_root", d.DeployRoot); err != nil {
+			return err
+		}
+	}
+	if d.PostDeploy != "" && strings.Contains(d.PostDeploy, "\n") {
+		return errors.New("post_deploy must not contain newlines")
+	}
 	if d.Maintenance.Enabled && d.Maintenance.File == "" {
 		return errors.New("maintenance file is required when maintenance is enabled")
+	}
+	if d.Maintenance.Enabled {
+		if err := ValidateRelativePath("maintenance_file", d.Maintenance.File); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ValidateRelativePath(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", name)
+	}
+	if filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be relative", name)
+	}
+	if strings.Contains(value, "\n") {
+		return fmt.Errorf("%s must not contain newlines", name)
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(value))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("%s must stay under the docroot", name)
 	}
 	return nil
 }

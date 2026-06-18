@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/auth"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/doctor"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/engine"
@@ -119,6 +120,7 @@ func Parse(args []string) (Command, error) {
 		fs.StringVar(&cmd.DefaultRef, "default-ref", "", "default ref")
 		fs.StringVar(&cmd.DeployRoot, "deploy-root", "", "deploy root")
 		fs.IntVar(&cmd.KeepReleases, "keep-releases", 3, "kept releases")
+		fs.StringVar(&cmd.PostDeploy, "post-deploy", "", "post deploy")
 	case "config":
 		fs.Var((*repeatedStrings)(&cmd.Set), "set", "set key=value")
 		fs.Var((*repeatedStrings)(&cmd.Unset), "unset", "unset key")
@@ -154,7 +156,7 @@ func Parse(args []string) (Command, error) {
 	if fs.NArg() != 0 {
 		return Command{}, fmt.Errorf("unexpected argument: %s", fs.Arg(0))
 	}
-	if err := validateCommand(cmd); err != nil {
+	if err := validateCommand(&cmd); err != nil {
 		return Command{}, err
 	}
 	return cmd, nil
@@ -173,7 +175,7 @@ func knownVerb(verb string) bool {
 	return verb == "list"
 }
 
-func validateCommand(cmd Command) error {
+func validateCommand(cmd *Command) error {
 	if deploymentScopedVerbs[cmd.Verb] {
 		if cmd.Name == "" {
 			return errors.New("--name is required")
@@ -331,11 +333,13 @@ func Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 			return err
 		}
 		result, err := engine.Deploy(ctx, engine.DeployOptions{
-			StateRoot: layout.Root,
-			Config:    deployment,
-			RefMode:   cmd.RefMode,
-			RefValue:  cmd.RefValue,
-			Force:     cmd.Force,
+			StateRoot:           layout.Root,
+			Config:              deployment,
+			RefMode:             cmd.RefMode,
+			RefValue:            cmd.RefValue,
+			Force:               cmd.Force,
+			PostDeployOverride:  cmd.PostDeploy,
+			MaintenanceOverride: maintenanceOverride(cmd),
 		})
 		if err != nil {
 			return err
@@ -350,13 +354,18 @@ func Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if cmd.To == "" {
-			return errors.New("--to is required")
+		to := cmd.To
+		if to == "" {
+			selected, err := selectRollbackTarget(deployment)
+			if err != nil {
+				return err
+			}
+			to = selected
 		}
-		if err := engine.Rollback(engine.RollbackOptions{Config: deployment, ReleaseID: cmd.To}); err != nil {
+		if err := engine.Rollback(engine.RollbackOptions{Context: ctx, Config: deployment, ReleaseID: to}); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "rolled_back=%s\n", cmd.To)
+		_, _ = fmt.Fprintf(stdout, "rolled_back=%s\n", to)
 	case "releases":
 		deployment, err := config.Load(layout.DeploymentConfig(cmd.Name))
 		if err != nil {
@@ -387,7 +396,7 @@ func Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 			return err
 		}
 		repoDir := layout.Repo(cmd.Name)
-		if err := engine.EnsureRepo(ctx, repoDir, deployment.RepoURL, cmd.Fetch); err != nil {
+		if err := engine.EnsureRepo(ctx, repoDir, deployment, cmd.Fetch); err != nil {
 			return err
 		}
 		var lines []string
@@ -410,19 +419,52 @@ func Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if converted, ok := auth.HTTPSURLToSSH(deployment.RepoURL); ok {
+			deployment.RepoURL = converted
+		}
 		switch {
 		case cmd.Remove:
+			if cmd.Verify {
+				return errors.New("--remove cannot be combined with --verify")
+			}
+			managed := deployment.SSHKeyPath == layout.Key(cmd.Name)
 			deployment.SSHKeyPath = ""
+			if cmd.PurgeKey && managed {
+				_ = os.Remove(layout.Key(cmd.Name))
+				_ = os.Remove(layout.Key(cmd.Name) + ".pub")
+			}
 		case cmd.UseKey != "":
 			if err := validatePrivateKeyPath(ctx, cmd.UseKey); err != nil {
 				return err
 			}
 			deployment.SSHKeyPath = cmd.UseKey
+		case cmd.ImportKey != "":
+			keyPath, err := importPrivateKey(ctx, layout, cmd.Name, cmd.ImportKey, cmd.ForceNewKey)
+			if err != nil {
+				return err
+			}
+			deployment.SSHKeyPath = keyPath
 		default:
-			return errors.New("auth requires --use-key, --import-key, or --remove")
+			keyPath, err := generateOrReuseKey(ctx, layout, cmd.Name, cmd.ForceNewKey)
+			if err != nil {
+				return err
+			}
+			deployment.SSHKeyPath = keyPath
+		}
+		if cmd.Verify {
+			if err := verifyRemoteAccess(ctx, deployment); err != nil {
+				return err
+			}
 		}
 		if err := config.Save(layout.DeploymentConfig(cmd.Name), deployment); err != nil {
 			return err
+		}
+		if deployment.SSHKeyPath != "" {
+			publicKey, err := derivePublicKey(ctx, deployment.SSHKeyPath)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(stdout, "%s\n", strings.TrimSpace(publicKey))
 		}
 		_, _ = fmt.Fprintf(stdout, "configured auth for %s\n", cmd.Name)
 	case "doctor":
@@ -444,8 +486,37 @@ func Run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 					report.OK(command, "found")
 				}
 			}
+			if deployment.SSHKeyPath == "" {
+				report.Warn("ssh-key", "no configured SSH key; Git will use ambient SSH configuration")
+			} else if err := validatePrivateKeyPath(ctx, deployment.SSHKeyPath); err != nil {
+				report.Fail("ssh-key", err.Error())
+			} else {
+				report.OK("ssh-key", "usable")
+			}
+			if cmd.PrintClaims {
+				claimList, err := engine.ClaimsForCurrent(deployment.Docroot, deployment.DeploymentID)
+				if err != nil {
+					report.Fail("claims", err.Error())
+				} else {
+					for _, claim := range claimList {
+						_, _ = fmt.Fprintln(stdout, claim)
+					}
+					report.OK("claims", fmt.Sprintf("%d claims", len(claimList)))
+				}
+			}
+			if cmd.AssertPublicSymlinks {
+				if err := engine.AssertDeploymentSymlinks(deployment.Docroot, deployment.DeploymentID, os.Getenv("HOME")); err != nil {
+					report.Fail("public-symlinks", err.Error())
+				} else {
+					report.OK("public-symlinks", "valid")
+				}
+			}
 			if !cmd.Offline {
-				report.Warn("git-remote", "remote access check is not implemented yet")
+				if err := verifyRemoteAccess(ctx, deployment); err != nil {
+					report.Fail("git-remote", err.Error())
+				} else {
+					report.OK("git-remote", "accessible")
+				}
 			}
 		}
 		for _, check := range report.Checks {
@@ -594,6 +665,16 @@ func unsetConfigValue(deployment *config.Deployment, key string) error {
 	return nil
 }
 
+func maintenanceOverride(cmd Command) *config.Maintenance {
+	if cmd.NoMaintenanceFile {
+		return &config.Maintenance{Enabled: false}
+	}
+	if cmd.MaintenanceFile != "" {
+		return &config.Maintenance{Enabled: true, File: cmd.MaintenanceFile}
+	}
+	return nil
+}
+
 func validatePrivateKeyPath(ctx context.Context, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -606,6 +687,150 @@ func validatePrivateKeyPath(ctx context.Context, path string) error {
 	if mode&0o077 != 0 {
 		return fmt.Errorf("private key permissions are too open: %s", path)
 	}
-	_, err = execx.Run(ctx, execx.Command{Name: "ssh-keygen", Args: []string{"-y", "-f", path}})
+	_, err = derivePublicKey(ctx, path)
 	return err
+}
+
+func generateOrReuseKey(ctx context.Context, layout state.Layout, name string, force bool) (string, error) {
+	keyPath := layout.Key(name)
+	if !force {
+		if _, err := os.Stat(keyPath); err == nil {
+			return keyPath, validatePrivateKeyPath(ctx, keyPath)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return "", err
+	}
+	if force {
+		_ = os.Remove(keyPath)
+		_ = os.Remove(keyPath + ".pub")
+	}
+	if _, err := execx.Run(ctx, execx.Command{
+		Name: "ssh-keygen",
+		Args: []string{"-t", "ed25519", "-N", "", "-f", keyPath},
+	}); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		return "", err
+	}
+	if err := derivePublicKeyFile(ctx, keyPath); err != nil {
+		return "", err
+	}
+	return keyPath, nil
+}
+
+func importPrivateKey(ctx context.Context, layout state.Layout, name, sourcePath string, force bool) (string, error) {
+	if err := validatePrivateKeyPath(ctx, sourcePath); err != nil {
+		return "", err
+	}
+	keyPath := layout.Key(name)
+	sourceReal, _ := filepath.EvalSymlinks(sourcePath)
+	keyReal, _ := filepath.EvalSymlinks(keyPath)
+	if sourceReal != "" && keyReal != "" && sourceReal == keyReal {
+		return "", fmt.Errorf("--import-key source is already the managed key; use --use-key instead")
+	}
+	if _, err := os.Stat(keyPath); err == nil && !force {
+		return "", fmt.Errorf("managed key already exists: %s", keyPath)
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(keyPath, data, 0o600); err != nil {
+		return "", err
+	}
+	if err := derivePublicKeyFile(ctx, keyPath); err != nil {
+		return "", err
+	}
+	return keyPath, nil
+}
+
+func derivePublicKey(ctx context.Context, keyPath string) (string, error) {
+	if err := execx.RequireCommands(ctx, []string{"ssh-keygen"}); err != nil {
+		return "", err
+	}
+	result, err := execx.Run(ctx, execx.Command{Name: "ssh-keygen", Args: []string{"-y", "-f", keyPath}})
+	if err != nil {
+		return "", fmt.Errorf("private key cannot be used without prompting or is not a valid private key: %s: %w", keyPath, err)
+	}
+	return result.Stdout, nil
+}
+
+func derivePublicKeyFile(ctx context.Context, keyPath string) error {
+	publicKey, err := derivePublicKey(ctx, keyPath)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(keyPath), "."+filepath.Base(keyPath)+".pub.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.WriteString(publicKey); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, keyPath+".pub")
+}
+
+func verifyRemoteAccess(ctx context.Context, deployment config.Deployment) error {
+	env := []string(nil)
+	if deployment.SSHKeyPath != "" {
+		env = []string{"GIT_SSH_COMMAND=" + auth.GitSSHCommand(deployment.SSHKeyPath)}
+	}
+	_, err := execx.Run(ctx, execx.Command{
+		Name: "git",
+		Args: []string{"ls-remote", "--heads", deployment.RepoURL},
+		Env:  env,
+	})
+	return err
+}
+
+func selectRollbackTarget(deployment config.Deployment) (string, error) {
+	layout := state.NewDocroot(deployment.Docroot, deployment.DeploymentID)
+	current := ""
+	if target, err := os.Readlink(layout.Current()); err == nil {
+		current = filepath.Base(target)
+	}
+	entries, err := os.ReadDir(filepath.Join(layout.Base(), "releases"))
+	if err != nil {
+		return "", err
+	}
+	type releaseEntry struct {
+		name    string
+		modTime int64
+	}
+	var candidates []releaseEntry
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == current {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return "", err
+		}
+		candidates = append(candidates, releaseEntry{name: entry.Name(), modTime: info.ModTime().UnixNano()})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modTime == candidates[j].modTime {
+			return candidates[i].name > candidates[j].name
+		}
+		return candidates[i].modTime > candidates[j].modTime
+	})
+	if len(candidates) == 0 {
+		return "", errors.New("no rollback target available")
+	}
+	return candidates[0].name, nil
 }

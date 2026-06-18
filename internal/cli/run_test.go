@@ -200,6 +200,52 @@ func TestRunAuthUseKeyRemoveAndDoctorOffline(t *testing.T) {
 	}
 }
 
+func TestRunAuthGenerateImportAndPurgeManagedKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := initGitRepoForCLI(t)
+	docroot := t.TempDir()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := Run(t.Context(), []string{
+		"init",
+		"--name", "site",
+		"--repo", repo,
+		"--docroot", docroot,
+		"--deployment-id", "site",
+		"--default-ref", "main",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	stdout.Reset()
+	if err := Run(t.Context(), []string{"auth", "--name", "site"}, &stdout, &stderr); err != nil {
+		t.Fatalf("auth generate failed: %v", err)
+	}
+	managedKey := filepath.Join(home, ".wpcloud-site-git-deploy", "keys", "site_ed25519")
+	if _, err := os.Stat(managedKey); err != nil {
+		t.Fatalf("managed key was not created: %v", err)
+	}
+	if _, err := os.Stat(managedKey + ".pub"); err != nil {
+		t.Fatalf("managed public key was not created: %v", err)
+	}
+
+	externalKey := filepath.Join(t.TempDir(), "external_ed25519")
+	runExternalOrFail(t, "", "ssh-keygen", "-t", "ed25519", "-N", "", "-f", externalKey)
+	if err := Run(t.Context(), []string{"auth", "--name", "site", "--import-key", externalKey}, &stdout, &stderr); err == nil {
+		t.Fatal("import should fail when managed key exists without --force-new-key")
+	}
+	if err := Run(t.Context(), []string{"auth", "--name", "site", "--import-key", externalKey, "--force-new-key"}, &stdout, &stderr); err != nil {
+		t.Fatalf("import with force failed: %v", err)
+	}
+	if err := Run(t.Context(), []string{"auth", "--name", "site", "--remove", "--purge-key"}, &stdout, &stderr); err != nil {
+		t.Fatalf("auth purge failed: %v", err)
+	}
+	if _, err := os.Stat(managedKey); !os.IsNotExist(err) {
+		t.Fatalf("managed key should be purged, err=%v", err)
+	}
+}
+
 func initGitRepoForCLI(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 )
 
 type Command struct {
-	Name string
-	Args []string
-	Dir  string
-	Env  []string
+	Name  string
+	Args  []string
+	Dir   string
+	Env   []string
+	Stdin io.Reader
 }
 
 type Result struct {
@@ -37,6 +39,7 @@ func RequireCommands(ctx context.Context, names []string) error {
 func Run(ctx context.Context, command Command) (Result, error) {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
+	cmd.Stdin = command.Stdin
 	if len(command.Env) > 0 {
 		cmd.Env = append(os.Environ(), command.Env...)
 	}

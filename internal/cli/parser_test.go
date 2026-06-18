@@ -45,6 +45,24 @@ func TestParseDeployAllowsDefaultRef(t *testing.T) {
 	}
 }
 
+func TestParseDeployCapturesExplicitRefs(t *testing.T) {
+	tagCmd, err := Parse([]string{"deploy", "--name", "site", "--tag", "v1"})
+	if err != nil {
+		t.Fatalf("deploy tag should parse: %v", err)
+	}
+	if tagCmd.RefMode != "tag" || tagCmd.RefValue != "v1" {
+		t.Fatalf("tag ref was not captured: %#v", tagCmd)
+	}
+
+	commitCmd, err := Parse([]string{"deploy", "--name", "site", "--commit", "abc123"})
+	if err != nil {
+		t.Fatalf("deploy commit should parse: %v", err)
+	}
+	if commitCmd.RefMode != "commit" || commitCmd.RefValue != "abc123" {
+		t.Fatalf("commit ref was not captured: %#v", commitCmd)
+	}
+}
+
 func TestParseDeployRejectsMultipleRefs(t *testing.T) {
 	_, err := Parse([]string{"deploy", "--name", "site", "--branch", "main", "--tag", "v1"})
 	if err == nil {

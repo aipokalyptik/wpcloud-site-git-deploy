@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/auth"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/execx"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
@@ -15,11 +16,13 @@ import (
 )
 
 type DeployOptions struct {
-	StateRoot string
-	Config    config.Deployment
-	RefMode   string
-	RefValue  string
-	Force     bool
+	StateRoot           string
+	Config              config.Deployment
+	RefMode             string
+	RefValue            string
+	Force               bool
+	PostDeployOverride  string
+	MaintenanceOverride *config.Maintenance
 }
 
 type DeployResult struct {
@@ -39,13 +42,14 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	layout := state.New(options.StateRoot)
 	docrootLayout := state.NewDocroot(options.Config.Docroot, options.Config.DeploymentID)
 	repoDir := layout.Repo(options.Config.Name)
-	if err := ensureRepo(ctx, repoDir, options.Config.RepoURL); err != nil {
+	env := gitEnvironment(options.Config)
+	if err := ensureRepo(ctx, repoDir, options.Config.RepoURL, env); err != nil {
 		return DeployResult{}, err
 	}
-	if _, err := git(ctx, repoDir, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	if _, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		return DeployResult{}, err
 	}
-	_, _ = git(ctx, repoDir, "gc", "--auto")
+	_, _ = git(ctx, repoDir, nil, "gc", "--auto")
 	commit, err := resolveRef(ctx, repoDir, options.RefMode, options.RefValue)
 	if err != nil {
 		return DeployResult{}, err
@@ -64,15 +68,25 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 		return DeployResult{}, err
 	}
 	defer os.RemoveAll(worktree)
-	if _, err := git(ctx, repoDir, "worktree", "add", "--detach", worktree, commit); err != nil {
+	if _, err := git(ctx, repoDir, env, "worktree", "add", "--detach", worktree, commit); err != nil {
 		return DeployResult{}, err
 	}
-	defer git(ctx, repoDir, "worktree", "remove", "--force", worktree)
-	defer git(ctx, repoDir, "worktree", "prune")
+	defer git(ctx, repoDir, nil, "worktree", "remove", "--force", worktree)
+	defer git(ctx, repoDir, nil, "worktree", "prune")
+
+	if err := prepareGitFeatures(ctx, worktree, env); err != nil {
+		return DeployResult{}, err
+	}
 
 	source := worktree
 	if options.Config.DeployRoot != "" {
 		source = filepath.Join(worktree, filepath.FromSlash(options.Config.DeployRoot))
+	}
+	if info, err := os.Stat(source); err != nil || !info.IsDir() {
+		if err == nil {
+			err = fmt.Errorf("not a directory")
+		}
+		return DeployResult{}, fmt.Errorf("deploy root does not exist or is not a directory: %s: %w", emptyAsDot(options.Config.DeployRoot), err)
 	}
 	incoming := docrootLayout.Incoming(releaseID)
 	if err := os.RemoveAll(incoming); err != nil {
@@ -81,14 +95,24 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	if err := os.MkdirAll(incoming, 0o755); err != nil {
 		return DeployResult{}, err
 	}
-	if _, err := runCommand(ctx, "rsync", []string{"-a", "--delete", source + "/", incoming + "/"}, "", nil); err != nil {
+	if err := copySourceToIncoming(ctx, source, incoming, docrootLayout); err != nil {
 		return DeployResult{}, err
+	}
+	maintenance := options.Config.Maintenance
+	if options.MaintenanceOverride != nil {
+		maintenance = *options.MaintenanceOverride
+	}
+	postDeploy := options.Config.PostDeploy
+	if options.PostDeployOverride != "" {
+		postDeploy = options.PostDeployOverride
 	}
 	if err := Promote(PromoteOptions{
 		Docroot:      options.Config.Docroot,
 		DeploymentID: options.Config.DeploymentID,
 		ReleaseID:    releaseID,
 		KeepReleases: options.Config.KeepReleases,
+		PostDeploy:   postDeploy,
+		Maintenance:  maintenance,
 	}); err != nil {
 		return DeployResult{}, err
 	}
@@ -106,26 +130,28 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	return DeployResult{ReleaseID: releaseID, Commit: commit}, nil
 }
 
-func ensureRepo(ctx context.Context, repoDir, repoURL string) error {
+func ensureRepo(ctx context.Context, repoDir, repoURL string, env []string) error {
 	if _, err := os.Stat(filepath.Join(repoDir, "HEAD")); err == nil {
+		_, _ = runCommand(ctx, "git", []string{"remote", "set-url", "origin", repoURL}, repoDir, env)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
 		return err
 	}
-	_, err := runCommand(ctx, "git", []string{"clone", "--bare", repoURL, repoDir}, "", nil)
+	_, err := runCommand(ctx, "git", []string{"clone", "--bare", repoURL, repoDir}, "", env)
 	return err
 }
 
-func EnsureRepo(ctx context.Context, repoDir, repoURL string, fetch bool) error {
-	if err := ensureRepo(ctx, repoDir, repoURL); err != nil {
+func EnsureRepo(ctx context.Context, repoDir string, deployment config.Deployment, fetch bool) error {
+	env := gitEnvironment(deployment)
+	if err := ensureRepo(ctx, repoDir, deployment.RepoURL, env); err != nil {
 		return err
 	}
 	if fetch {
-		if _, err := git(ctx, repoDir, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		if _, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 			return err
 		}
-		_, _ = git(ctx, repoDir, "gc", "--auto")
+		_, _ = git(ctx, repoDir, nil, "gc", "--auto")
 	}
 	return nil
 }
@@ -143,7 +169,7 @@ func Commits(ctx context.Context, repoDir string, limit int) ([]string, error) {
 }
 
 func gitLines(ctx context.Context, repoDir string, limit int, args ...string) ([]string, error) {
-	result, err := git(ctx, repoDir, args...)
+	result, err := git(ctx, repoDir, nil, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -175,19 +201,145 @@ func resolveRef(ctx context.Context, repoDir, refMode, refValue string) (string,
 }
 
 func revParse(ctx context.Context, repoDir, ref string) (string, error) {
-	result, err := git(ctx, repoDir, "rev-parse", ref+"^{commit}")
+	result, err := git(ctx, repoDir, nil, "rev-parse", ref+"^{commit}")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(result.Stdout), nil
 }
 
-func git(ctx context.Context, repoDir string, args ...string) (execx.Result, error) {
-	return runCommand(ctx, "git", args, repoDir, nil)
+func git(ctx context.Context, repoDir string, env []string, args ...string) (execx.Result, error) {
+	return runCommand(ctx, "git", args, repoDir, env)
 }
 
 func runCommand(ctx context.Context, name string, args []string, dir string, env []string) (execx.Result, error) {
 	return execx.Run(ctx, execx.Command{Name: name, Args: args, Dir: dir, Env: env})
+}
+
+func gitEnvironment(deployment config.Deployment) []string {
+	if deployment.SSHKeyPath == "" {
+		return nil
+	}
+	return []string{"GIT_SSH_COMMAND=" + auth.GitSSHCommand(deployment.SSHKeyPath)}
+}
+
+func prepareGitFeatures(ctx context.Context, worktree string, env []string) error {
+	if _, err := os.Stat(filepath.Join(worktree, ".gitmodules")); err == nil {
+		if _, err := runCommand(ctx, "git", []string{"submodule", "update", "--init", "--recursive"}, worktree, env); err != nil {
+			return err
+		}
+		status, err := runCommand(ctx, "git", []string{"submodule", "status", "--recursive"}, worktree, nil)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(status.Stdout, "\n") {
+			if strings.HasPrefix(line, "-") {
+				return fmt.Errorf("one or more submodules are uninitialized")
+			}
+		}
+	}
+
+	files, err := runCommand(ctx, "git", []string{"ls-files", "-z"}, worktree, nil)
+	if err != nil {
+		return err
+	}
+	attrs, err := execx.Run(ctx, execx.Command{
+		Name:  "git",
+		Args:  []string{"check-attr", "filter", "--stdin", "-z"},
+		Dir:   worktree,
+		Stdin: strings.NewReader(files.Stdout),
+	})
+	if err != nil {
+		return err
+	}
+	lfsPaths := lfsPathsFromCheckAttr(attrs.Stdout)
+	if len(lfsPaths) == 0 {
+		return nil
+	}
+	if err := execx.RequireCommands(ctx, []string{"git-lfs"}); err != nil {
+		return fmt.Errorf("git-lfs is required for repositories using Git LFS: %w", err)
+	}
+	if _, err := runCommand(ctx, "git-lfs", []string{"install", "--local"}, worktree, env); err != nil {
+		return err
+	}
+	if _, err := runCommand(ctx, "git-lfs", []string{"pull"}, worktree, env); err != nil {
+		return err
+	}
+	for _, path := range lfsPaths {
+		data, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(path)))
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(string(data), "version https://git-lfs.github.com/spec/v1\n") {
+			return fmt.Errorf("Git LFS pointer files remain after git lfs pull")
+		}
+	}
+	return nil
+}
+
+func lfsPathsFromCheckAttr(output string) []string {
+	fields := strings.Split(output, "\x00")
+	var paths []string
+	for i := 0; i+2 < len(fields); i += 3 {
+		if fields[i+2] == "lfs" {
+			paths = append(paths, fields[i])
+		}
+	}
+	return paths
+}
+
+func copySourceToIncoming(ctx context.Context, source, incoming string, layout state.DocrootLayout) error {
+	excludes, err := os.CreateTemp("", "wpcloud-site-git-deploy-excludes.*")
+	if err != nil {
+		return err
+	}
+	excludePath := excludes.Name()
+	defer os.Remove(excludePath)
+	if _, err := excludes.WriteString(defaultExcludes()); err != nil {
+		excludes.Close()
+		return err
+	}
+	if err := excludes.Close(); err != nil {
+		return err
+	}
+	args := []string{"-a", "--delete", "--exclude-from=" + excludePath}
+	if current := currentReleasePath(layout); current != "" {
+		if info, err := os.Stat(current); err == nil && info.IsDir() {
+			args = append(args, "--checksum", "--no-times", "--link-dest="+current)
+		}
+	}
+	args = append(args, source+string(os.PathSeparator), incoming+string(os.PathSeparator))
+	_, err = runCommand(ctx, "rsync", args, "", nil)
+	return err
+}
+
+func defaultExcludes() string {
+	return strings.Join([]string{
+		".git",
+		".git/",
+		".gitignore",
+		".gitattributes",
+		".gitmodules",
+		".github/",
+		".svn/",
+		".hg/",
+		".bzr/",
+		".aws/",
+		".ssh/",
+		".env",
+		".env.*",
+		".npmrc",
+		".pypirc",
+		".netrc",
+		".DS_Store",
+	}, "\n") + "\n"
+}
+
+func emptyAsDot(value string) string {
+	if value == "" {
+		return "."
+	}
+	return value
 }
 
 func loadCurrentMetadata(layout state.DocrootLayout) (releases.Metadata, bool) {
