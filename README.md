@@ -29,6 +29,17 @@ The implementation uses the Go standard library plus `golang.org/x/sys`.
 External deploy subsystems still run as external commands where that is the
 contract: `git`, `git-lfs`, `ssh`, `ssh-keygen`, and `rsync`.
 
+Common local tasks are also wrapped in `make` targets. The Makefile keeps Go
+build and module caches under the ignored `.cache/` directory so checks do not
+write into `$HOME`:
+
+```bash
+make build      # static Linux amd64 binary in dist/
+make check      # Go tests, vet, shell syntax, shellcheck, and diff checks
+make clean      # remove generated build/cache artifacts
+make live-e2e   # run the disposable-site E2E matrix
+```
+
 ## Install
 
 Build or provide a Linux amd64 binary, then run:
