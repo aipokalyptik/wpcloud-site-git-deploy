@@ -8,6 +8,8 @@ evidence="${WPCLOUD_SITE_GIT_DEPLOY_E2E_EVIDENCE:-$repo_root/tmp/go-live-e2e-evi
 known_hosts="${WPCLOUD_SITE_GIT_DEPLOY_KNOWN_HOSTS:-/tmp/wpcloud-site-git-deploy-known-hosts}"
 bundle="${WPCLOUD_SITE_GIT_DEPLOY_E2E_BUNDLE:-$repo_root/tmp/go-live-e2e-source.tar.gz}"
 binary="$repo_root/dist/wpcloud-site-git-deploy-linux-amd64"
+git_lfs_version="${WPCLOUD_SITE_GIT_DEPLOY_GIT_LFS_VERSION:-3.7.1}"
+git_lfs_linux_amd64_sha256="${WPCLOUD_SITE_GIT_DEPLOY_GIT_LFS_LINUX_AMD64_SHA256:-1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08}"
 
 if [[ -f "$repo_root/.env.local" ]]; then
   set -a
@@ -81,6 +83,40 @@ expect {
 catch wait result
 exit [lindex $result 3]
 EXPECT
+}
+
+ensure_remote_git_lfs() {
+  log "## ensure-git-lfs"
+
+  remote_script ensure-git-lfs <<REMOTE
+set -euo pipefail
+export PATH="\$HOME/.wpcloud-site-git-deploy/bin:\$PATH"
+if command -v git-lfs >/dev/null 2>&1; then
+  git-lfs version
+  exit 0
+fi
+
+version="$git_lfs_version"
+expected_sha="$git_lfs_linux_amd64_sha256"
+url="https://github.com/git-lfs/git-lfs/releases/download/v\${version}/git-lfs-linux-amd64-v\${version}.tar.gz"
+work="\$(mktemp -d "\${TMPDIR:-/tmp}/git-lfs.XXXXXX")"
+archive="\$work/git-lfs.tar.gz"
+trap 'rm -rf "\$work"' EXIT
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "\$url" -o "\$archive"
+elif command -v wget >/dev/null 2>&1; then
+  wget -q "\$url" -O "\$archive"
+else
+  printf 'curl or wget is required to download git-lfs\n' >&2
+  exit 1
+fi
+
+printf '%s  %s\n' "\$expected_sha" "\$archive" | sha256sum -c -
+tar -xzf "\$archive" -C "\$work"
+install -m 755 "\$work/git-lfs-\$version/git-lfs" "\$HOME/.wpcloud-site-git-deploy/bin/git-lfs"
+git-lfs version
+REMOTE
 }
 
 copy_bundle() {
@@ -203,6 +239,7 @@ REMOTE
 
 require_command expect
 require_command git
+require_command git-lfs
 require_command tar
 require_command gh
 
@@ -249,6 +286,7 @@ wpcloud-site-git-deploy init --name cli-test --repo https://github.com/aipokalyp
 wpcloud-site-git-deploy init --name cli-auth --repo https://github.com/aipokalyptik/wpcloud-site-git-deploy-fixture.git --docroot /srv/htdocs --deployment-id cli-auth --default-ref main --keep-releases 2
 wpcloud-site-git-deploy doctor --name cli-test --offline
 REMOTE
+ensure_remote_git_lfs
 
 reset_fixture_tree
 cat >"$fixture/index.html" <<'EOF'
@@ -388,34 +426,15 @@ EOF
 commit_fixture go-live-foreign-fixed >/dev/null
 remote_deploy_default e2e-10-foreign-fixed 'grep -q foreign-fixed /srv/htdocs/index.html'
 
-if remote_script e2e-11-lfs-check <<'REMOTE'
-set -euo pipefail
-command -v git-lfs >/dev/null 2>&1
-REMOTE
-then
-  git -C "$fixture" lfs install --local >/dev/null
-  git -C "$fixture" lfs track '*.bin' >/dev/null
-  cat >"$fixture/index.html" <<'EOF'
+git -C "$fixture" lfs install --local >/dev/null
+git -C "$fixture" lfs track '*.bin' >/dev/null
+cat >"$fixture/index.html" <<'EOF'
 lfs-release
 EOF
-  mkdir -p "$fixture/assets"
-  printf 'large-content-from-lfs\n' >"$fixture/assets/blob.bin"
-  commit_fixture go-live-lfs >/dev/null
-  remote_deploy_default e2e-11-lfs 'grep -q large-content-from-lfs /srv/htdocs/assets/blob.bin'
-else
-  log "## e2e-11-lfs"
-  git -C "$fixture" lfs install --local >/dev/null
-  git -C "$fixture" lfs track 'assets/*.bin' >/dev/null
-  mkdir -p "$fixture/assets"
-  cat >"$fixture/assets/blob.bin" <<'EOF'
-large-content-that-requires-lfs-on-remote
-EOF
-  commit_fixture go-live-lfs-missing-tool >/dev/null
-  expect_remote_failure e2e-11-lfs-missing-tool 'wpcloud-site-git-deploy deploy --name cli-test' 'git-lfs is required' 'grep -q foreign-fixed /srv/htdocs/index.html'
-  rm -f "$fixture/.gitattributes"
-  rm -rf "$fixture/assets"
-  commit_fixture go-live-lfs-cleanup >/dev/null
-fi
+mkdir -p "$fixture/assets"
+printf 'large-content-from-lfs\n' >"$fixture/assets/blob.bin"
+commit_fixture go-live-lfs >/dev/null
+remote_deploy_default e2e-11-lfs 'grep -q large-content-from-lfs /srv/htdocs/assets/blob.bin'
 
 rm -rf "$fixture/modules" "$fixture/.git/modules/modules/layer"
 git -C "$fixture" submodule add https://github.com/aipokalyptik/wpcloud-site-git-deploy-layer-fixture.git modules/layer >/dev/null

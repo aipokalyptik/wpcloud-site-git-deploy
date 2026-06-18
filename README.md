@@ -76,7 +76,10 @@ scripts/live-e2e.sh
 The live matrix installs the static Go binary, exercises deploy, no-op, force,
 deploy roots, post-deploy maintenance, shared WordPress path safety, tag/commit
 deploys, submodules, deploy-key auth, doctor checks, rollback, inspection
-commands, and the current WP Cloud missing-`git-lfs` failure mode.
+commands, and Git LFS hydration. If `git-lfs` is missing on the disposable
+site, the matrix downloads the official Linux amd64 Git LFS release artifact,
+verifies its SHA-256 checksum, and installs it into the tool-managed bin
+directory before running the LFS deploy scenario.
 
 ## Go CLI Direction
 
