@@ -26,6 +26,8 @@ type configKeySpec struct {
 
 var Version = "dev"
 
+// Each config key is registered once with its setter and optional unsetter. The
+// parser, config command, and validation rules share this table to avoid drift.
 var configKeySpecs = map[string]configKeySpec{
 	"repo_url": {
 		set: func(deployment *config.Deployment, value string) error {
@@ -365,6 +367,8 @@ func runAuth(ctx context.Context, layout state.Layout, cmd Command, stdout io.Wr
 		managed := deployment.SSHKeyPath == layout.Key(cmd.Name)
 		deployment.SSHKeyPath = ""
 		if cmd.PurgeKey && managed {
+			// Purge deletes only tool-managed keys. External --use-key files are
+			// never removed by this CLI.
 			_ = os.Remove(layout.Key(cmd.Name))
 			_ = os.Remove(layout.Key(cmd.Name) + ".pub")
 		}
@@ -562,6 +566,8 @@ func selectRollbackTarget(deployment config.Deployment) (string, error) {
 			fallbackCandidates = append(fallbackCandidates, entry)
 		}
 	}
+	// Default rollback should prefer releases with metadata so a failed partial
+	// deploy directory cannot be selected while any known-good release remains.
 	candidates := metadataCandidates
 	if len(candidates) == 0 {
 		candidates = fallbackCandidates

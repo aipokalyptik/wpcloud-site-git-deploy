@@ -60,9 +60,13 @@ func Promote(options PromoteOptions) error {
 		return err
 	}
 	defer deployLock.Close()
+	// A previous failure can leave the temporary side of an exchange behind.
+	// Clean it before doing new work so the retry path is idempotent.
 	if err := cleanupExchangedPaths(layout); err != nil {
 		return err
 	}
+	// Remove stale maintenance markers owned by this deployment, but never a
+	// marker owned by another overlapping deployment or by WordPress itself.
 	cleanupOwnedMaintenanceFile(options.Docroot, options.DeploymentID, options.Maintenance)
 	if _, err := os.Stat(incoming); err != nil {
 		return fmt.Errorf("incoming release does not exist: %w", err)
@@ -87,6 +91,8 @@ func Promote(options PromoteOptions) error {
 	if err := os.Rename(incoming, release); err != nil {
 		return err
 	}
+	// Until claim validation and reconciliation prove this release is usable,
+	// a failed promotion should not leave a rollback-selectable release dir.
 	cleanupReleaseOnFailure := true
 	defer func() {
 		if cleanupReleaseOnFailure {
@@ -112,9 +118,13 @@ func Promote(options PromoteOptions) error {
 	if err != nil {
 		return err
 	}
+	// Materialized public symlinks are included because earlier failed or manual
+	// repairs can leave owned claims that are no longer derivable from current.
 	oldClaims = union(oldClaims, materialized)
 	removedClaims := claims.Removed(oldClaims, newClaims)
 	cleanupReleaseOnFailure = false
+	// If a path changes shape, such as file -> directory, remove the old owned
+	// symlink before creating the new claim so reconciliation can proceed.
 	cleanupOverlappingRemovedClaims(options.Docroot, options.DeploymentID, removedClaims, newClaims)
 	if err := reconcileNewClaims(options.Docroot, options.DeploymentID, newClaims); err != nil {
 		return err
@@ -122,6 +132,8 @@ func Promote(options PromoteOptions) error {
 	if err := switchCurrent(layout, options.ReleaseID); err != nil {
 		return err
 	}
+	// The public "current" pointer must stay relative to the docroot-visible
+	// release namespace; an absolute target would break WP Cloud HTTP requests.
 	if target, err := os.Readlink(layout.Current()); err != nil || target != "releases/"+options.ReleaseID {
 		return fmt.Errorf("current does not point to releases/%s", options.ReleaseID)
 	}
@@ -137,6 +149,8 @@ func Promote(options PromoteOptions) error {
 	if err := runPostDeploy(options.Context, options.Docroot, options.PostDeploy); err != nil {
 		return err
 	}
+	// Hooks run while maintenance is active. This explicit success cleanup pairs
+	// with the deferred failure cleanup so owned markers are not left behind.
 	cleanupOwnedMaintenanceFile(options.Docroot, options.DeploymentID, options.Maintenance)
 	maintenanceOwned = false
 	_, err = releases.Prune(filepath.Dir(release), options.KeepReleases, options.ReleaseID)
@@ -156,6 +170,8 @@ func Rollback(options RollbackOptions) error {
 		return err
 	}
 	defer deployLock.Close()
+	// Rollback uses the same exchange cleanup and lock as deploy because it
+	// rewrites public claims and current in the same docroot namespace.
 	if err := cleanupExchangedPaths(layout); err != nil {
 		return err
 	}
@@ -194,6 +210,8 @@ func Rollback(options RollbackOptions) error {
 	if err != nil {
 		return err
 	}
+	// Rollback does not create metadata or prune releases; it only recomputes
+	// the public claims needed to make the selected existing release active.
 	removedClaims := claims.Removed(union(oldClaims, materialized), newClaims)
 	cleanupOverlappingRemovedClaims(options.Config.Docroot, options.Config.DeploymentID, removedClaims, newClaims)
 	if err := reconcileNewClaims(options.Config.Docroot, options.Config.DeploymentID, newClaims); err != nil {
@@ -242,6 +260,8 @@ func currentReleasePath(layout state.DocrootLayout) string {
 	if err != nil {
 		return ""
 	}
+	// current is intentionally relative ("releases/<id>"), so join it to the
+	// deployment base before reading release content.
 	return filepath.Join(layout.Base(), target)
 }
 
@@ -253,6 +273,8 @@ func reconcileNewClaims(docroot, deploymentID string, newClaims []string) error 
 	}
 	for _, claim := range newClaims {
 		publicPath := filepath.Join(docroot, filepath.FromSlash(claim))
+		// Exact path takeover is allowed, but this deployment must not route
+		// through or engulf another deployment's subtree.
 		if err := rejectForeignAncestor(docroot, deploymentID, claim); err != nil {
 			return err
 		}
@@ -274,6 +296,8 @@ func reconcileNewClaims(docroot, deploymentID string, newClaims []string) error 
 			}
 			continue
 		}
+		// Existing public paths are atomically exchanged rather than removed and
+		// recreated, so readers never observe a missing path during promotion.
 		if err := publicfs.Exchange(tmpLink, publicPath); err != nil {
 			os.Remove(tmpLink)
 			return err
@@ -297,6 +321,8 @@ func switchCurrent(layout state.DocrootLayout, releaseID string) error {
 	if err := os.Symlink("releases/"+releaseID, tmp); err != nil {
 		return err
 	}
+	// Rename over the current symlink is the atomic release flip. Do not replace
+	// this with remove-then-create, which would expose a missing current pointer.
 	return os.Rename(tmp, layout.Current())
 }
 
@@ -365,6 +391,8 @@ func rejectForeignAncestor(docroot, deploymentID, claim string) error {
 	ancestor := docroot
 	for i := 0; i < len(parts)-1; i++ {
 		ancestor = filepath.Join(ancestor, parts[i])
+		// Walk public ancestors to catch cases where a new nested claim would be
+		// served through another deployment's public symlink.
 		target, err := os.Readlink(ancestor)
 		if err != nil {
 			continue
@@ -381,6 +409,8 @@ func rejectForeignDescendant(deploymentID, claim, publicPath string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}
+	// A real directory at the claimed path may contain another deployment's
+	// symlink. Replacing it would engulf that deployment, so reject descendants.
 	return filepath.WalkDir(publicPath, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -400,6 +430,9 @@ func rejectForeignDescendant(deploymentID, claim, publicPath string) error {
 }
 
 func deploymentOwnerFromTarget(target string) (string, bool) {
+	// Public deployment links all point into .wpcloud-site-git-deploy/deployments
+	// and include the owner id in the path; extract that id from any relative
+	// target shape before making cross-deployment decisions.
 	match := deploymentTargetPattern.FindStringSubmatch(filepath.ToSlash(target))
 	if match == nil {
 		return "", false
@@ -444,6 +477,8 @@ func cleanupExchangedPaths(layout state.DocrootLayout) error {
 		if path == "" {
 			continue
 		}
+		// The recorded path is the temporary side of a prior exchange. Removing
+		// it is safe and makes retry after interruption deterministic.
 		if err := os.RemoveAll(path); err != nil {
 			return err
 		}
@@ -480,6 +515,9 @@ func discoverBoundaryClaims(docroot string) ([]string, error) {
 		if info.Mode()&os.ModeSticky == 0 {
 			return nil
 		}
+		// Match the Bash spec: only root-owned or root-group sticky directories
+		// become claim boundaries. Ordinary sticky dirs owned by the site user are
+		// not treated as protected WordPress platform structure.
 		if !rootOwnedOrRootGroup(info) {
 			return nil
 		}
@@ -517,6 +555,8 @@ func discoverProtectedAnchors(docroot string) ([]string, error) {
 		if !ok {
 			return fmt.Errorf("stat data unavailable for %s", path)
 		}
+		// unix.Access asks whether the current site user can write the path. That
+		// differs from inspecting mode bits and catches root-owned 0644 anchors.
 		writable := unix.Access(path, unix.W_OK) == nil
 		if !protectedAnchorCandidate(stat.Uid, stat.Gid, writable) {
 			return nil
@@ -556,6 +596,8 @@ func validateClaimsNotProtected(newClaims, protectedAnchors []string) error {
 			if claim == protected ||
 				strings.HasPrefix(claim, protected+"/") ||
 				strings.HasPrefix(protected, claim+"/") {
+				// Both ancestor and descendant overlaps are rejected so a deploy
+				// cannot replace a protected anchor or claim a parent that contains it.
 				return fmt.Errorf("protected path: %s", claim)
 			}
 		}
@@ -569,6 +611,8 @@ func runPostDeploy(ctx context.Context, docroot, postDeploy string) error {
 	}
 	path := postDeploy
 	if !filepath.IsAbs(path) {
+		// Relative hook paths are resolved from the docroot because operators
+		// think of post-deploy scripts as site files, not shell HOME files.
 		path = filepath.Join(docroot, filepath.FromSlash(postDeploy))
 	}
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
@@ -578,6 +622,8 @@ func runPostDeploy(ctx context.Context, docroot, postDeploy string) error {
 		return fmt.Errorf("post-deploy file does not exist: %s: %w", postDeploy, err)
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-e", path)
+	// Hooks run with docroot as cwd so WordPress-oriented scripts can address
+	// site files with normal relative paths.
 	cmd.Dir = docroot
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -603,6 +649,8 @@ func maintenanceFileIsToolOwned(path, deploymentID string) bool {
 		return false
 	}
 	text := string(data)
+	// Accept both current PHP-comment markers and older plain marker text so a
+	// successful later deploy can clean up a stale marker from either format.
 	return (strings.Contains(text, "wpcloud-site-git-deploy maintenance") ||
 		strings.Contains(text, "// wpcloud-site-git-deploy maintenance")) &&
 		(strings.Contains(text, "deployment_id="+deploymentID) ||
@@ -615,6 +663,8 @@ func cleanupOwnedMaintenanceFile(docroot, deploymentID string, maintenance confi
 		return
 	}
 	if maintenanceFileIsToolOwned(path, deploymentID) {
+		// Never remove an unowned maintenance file; overlapping deployments and
+		// WordPress core updates may create their own markers at the same path.
 		_ = os.Remove(path)
 	}
 }
@@ -626,6 +676,8 @@ func createMaintenanceFile(docroot, deploymentID, releaseID string, maintenance 
 	}
 	cleanupOwnedMaintenanceFile(docroot, deploymentID, maintenance)
 	if _, err := os.Lstat(path); err == nil {
+		// Another owner already has a maintenance file in place. Leave it alone
+		// and continue without claiming ownership of cleanup.
 		return false, nil
 	} else if !os.IsNotExist(err) {
 		return false, err
@@ -649,6 +701,8 @@ func createMaintenanceFile(docroot, deploymentID, releaseID string, maintenance 
 		releaseID,
 		time.Now().UTC().Format(time.RFC3339),
 	)
+	// WordPress maintenance mode requires PHP that sets $upgrading to a recent
+	// timestamp. Plain text would be included as response output and ignored.
 	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
 		return false, err

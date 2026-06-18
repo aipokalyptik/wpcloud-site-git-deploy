@@ -21,6 +21,8 @@ func ValidatePrivateKeyPath(ctx context.Context, path string) error {
 		return fmt.Errorf("private key is a directory: %s", path)
 	}
 	mode := info.Mode().Perm()
+	// Only owner permissions are allowed. Group/world bits would expose a deploy
+	// key that is intended to be usable unattended by this site only.
 	if mode&0o077 != 0 {
 		return fmt.Errorf("private key permissions are too open: %s", path)
 	}
@@ -64,6 +66,8 @@ func ImportPrivateKey(ctx context.Context, layout state.Layout, name, sourcePath
 	keyPath := layout.Key(name)
 	sourceReal, _ := filepath.EvalSymlinks(sourcePath)
 	keyReal, _ := filepath.EvalSymlinks(keyPath)
+	// Import copies into the managed key path. If the source already is that
+	// path, force-import would delete the source before reading it.
 	if sourceReal != "" && keyReal != "" && sourceReal == keyReal {
 		return "", fmt.Errorf("--import-key source is already the managed key; use --use-key instead")
 	}
@@ -92,6 +96,8 @@ func DerivePublicKey(ctx context.Context, keyPath string) (string, error) {
 	}
 	result, err := execx.Run(ctx, execx.Command{Name: "ssh-keygen", Args: []string{"-y", "-f", keyPath}})
 	if err != nil {
+		// ssh-keygen -y fails for invalid or encrypted keys under BatchMode-style
+		// use, which keeps deploys non-interactive and cron-safe.
 		return "", fmt.Errorf("private key cannot be used without prompting or is not a valid private key: %s: %w", keyPath, err)
 	}
 	return result.Stdout, nil
@@ -116,6 +122,8 @@ func derivePublicKeyFile(ctx context.Context, keyPath string) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
+	// Write the .pub file through a temp file so a failed derivation never leaves
+	// a truncated public key beside a valid private key.
 	if _, err := tmp.WriteString(publicKey); err != nil {
 		tmp.Close()
 		return err

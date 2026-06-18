@@ -19,10 +19,16 @@ func PublicSymlinkTarget(deploymentID, claim string) string {
 			}
 		}
 	}
+	// Public docroot links must be relative because WP Cloud does not mount
+	// shell HOME for HTTP requests. The target walks back to the docroot root,
+	// then enters this deployment's docroot-visible release namespace.
 	return prefix + state.DocrootNamespace + "/deployments/" + deploymentID + "/current/" + claim
 }
 
 func AssertClaimSymlinksUnderDocroot(docroot string, claims []string, home string) error {
+	// Resolve the docroot once, then compare every public symlink's resolved
+	// target against that real path. This protects against relative links that
+	// look harmless but escape through symlinked parent directories.
 	docrootReal, err := filepath.EvalSymlinks(docroot)
 	if err != nil {
 		return err
@@ -43,6 +49,8 @@ func AssertClaimSymlinksUnderDocroot(docroot string, claims []string, home strin
 		if filepath.IsAbs(target) {
 			return fmt.Errorf("public symlink target is absolute: %s", claim)
 		}
+		// HOME paths are specifically rejected because HTTP requests on WP Cloud
+		// cannot see shell HOME even if SSH commands can.
 		if home != "" && strings.Contains(target, home) {
 			return fmt.Errorf("public symlink target contains HOME: %s", claim)
 		}

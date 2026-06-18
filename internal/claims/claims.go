@@ -17,6 +17,9 @@ var rejectedSharedPaths = []string{
 	".maintenance",
 }
 
+// These WordPress media containers are persistent runtime-owned directories.
+// The deployer may add or remove exact regular-file leaf symlinks inside them,
+// but it must not replace the container directories or claim whole subtrees.
 var sharedContainerPaths = []string{
 	"wp-content/uploads",
 	"wp-content/blogs.dir",
@@ -71,12 +74,19 @@ func Compute(releaseTree string, boundaries []string, rejectSharedPaths bool) ([
 			}
 		}
 		if sharedPath, ok := sharedContainerFor(publicPath); ok {
+			// A file at the exact container path would replace WordPress' runtime
+			// directory, so treat it like the fully rejected shared paths.
 			if rejectSharedPaths && publicPath == sharedPath {
 				return fmt.Errorf("shared path cannot be deployed: %s", sharedPath)
 			}
+			// Symlinks can point at directories or outside the regular-file model,
+			// which would undermine the "leaf files only" safety rule.
 			if rejectSharedPaths && entryType&os.ModeSymlink != 0 {
 				return fmt.Errorf("shared container symlink cannot be deployed: %s", publicPath)
 			}
+			// Do not compress media-container paths through sticky boundaries:
+			// each deployed media file is claimed independently so WordPress can
+			// keep managing sibling uploads and generated directories.
 			claims[publicPath] = struct{}{}
 			return nil
 		}
@@ -106,6 +116,8 @@ func Removed(oldClaims, newClaims []string) []string {
 func claimForPath(publicPath string, boundaries []string) string {
 	bestBoundary := ""
 	for _, boundary := range boundaries {
+		// Boundaries are stored as slash-style public paths. Trim surrounding
+		// slashes before comparing so callers can pass either "a/b" or "/a/b/".
 		boundary = strings.Trim(boundary, "/")
 		if boundary == "" {
 			continue
@@ -115,10 +127,15 @@ func claimForPath(publicPath string, boundaries []string) string {
 		}
 	}
 	if bestBoundary != "" {
+		// A sticky/protected boundary claims only the first path segment under
+		// that boundary. For example, under wp-content, a theme file claims
+		// wp-content/themes rather than all of wp-content.
 		remainder := strings.TrimPrefix(publicPath, bestBoundary+"/")
 		nextSegment, _, _ := strings.Cut(remainder, "/")
 		return bestBoundary + "/" + nextSegment
 	}
+	// Outside a boundary, the top-level path segment is the public claim. This
+	// keeps normal deploys compact while still allowing nested release content.
 	first, _, _ := strings.Cut(publicPath, "/")
 	return first
 }

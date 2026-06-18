@@ -7,6 +7,9 @@ import (
 )
 
 func GitSSHCommand(keyPath string) string {
+	// IdentitiesOnly prevents ssh-agent from offering unrelated keys first.
+	// BatchMode keeps deploy/update cron-safe by failing instead of prompting.
+	// accept-new gives first-contact trust-on-first-use without editing ~/.ssh.
 	return "ssh -i " + shellQuote(keyPath) +
 		" -o IdentitiesOnly=yes" +
 		" -o BatchMode=yes" +
@@ -21,6 +24,8 @@ func HTTPSURLToSSH(rawURL string) (string, bool) {
 	if parsed.Scheme != "https" || parsed.Host == "" || parsed.Path == "" || parsed.Path == "/" {
 		return "", false
 	}
+	// Most Git hosts accept the mechanical SSH shape git@host:path for the same
+	// repository path. Keep the path verbatim rather than adding provider rules.
 	return "git@" + parsed.Host + ":" + strings.TrimPrefix(parsed.Path, "/"), true
 }
 
@@ -53,5 +58,7 @@ func shellQuote(value string) string {
 	}) == -1 {
 		return value
 	}
+	// GIT_SSH_COMMAND is interpreted by a shell. Single-quote the path and
+	// escape embedded quotes using the standard '\'' sequence.
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

@@ -49,12 +49,16 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	if _, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		return DeployResult{}, err
 	}
+	// The repository cache is long-lived, so let Git opportunistically maintain
+	// it after network fetches without making deployment depend on GC success.
 	_, _ = git(ctx, repoDir, nil, "gc", "--auto")
 	commit, err := resolveRef(ctx, repoDir, options.RefMode, options.RefValue)
 	if err != nil {
 		return DeployResult{}, err
 	}
 	if !options.Force {
+		// A cron-safe deploy is a no-op only when both the resolved commit and
+		// deploy root match the currently active release metadata.
 		if currentMeta, ok := loadCurrentMetadata(docrootLayout); ok && releases.CurrentMatches(currentMeta, commit, options.Config.DeployRoot) {
 			return DeployResult{ReleaseID: currentMeta.ReleaseID, Commit: commit, NoOp: true}, nil
 		}
@@ -132,6 +136,8 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 
 func ensureRepo(ctx context.Context, repoDir, repoURL string, env []string) error {
 	if _, err := os.Stat(filepath.Join(repoDir, "HEAD")); err == nil {
+		// Existing caches are reused across deploys, but the remote URL follows
+		// current config so repo moves do not require manual cache deletion.
 		_, _ = runCommand(ctx, "git", []string{"remote", "set-url", "origin", repoURL}, repoDir, env)
 		return nil
 	}
@@ -151,6 +157,8 @@ func EnsureRepo(ctx context.Context, repoDir string, deployment config.Deploymen
 		if _, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 			return err
 		}
+		// Inspection commands with --fetch share the same long-lived cache as
+		// deploys, so they get the same best-effort maintenance pass.
 		_, _ = git(ctx, repoDir, nil, "gc", "--auto")
 	}
 	return nil
@@ -225,6 +233,9 @@ func gitEnvironment(deployment config.Deployment) []string {
 
 func prepareGitFeatures(ctx context.Context, worktree string, env []string) error {
 	if _, err := os.Stat(filepath.Join(worktree, ".gitmodules")); err == nil {
+		// Submodules are part of the deployed tree contract. After initializing,
+		// verify none remain with the leading "-" status marker Git uses for an
+		// uninitialized submodule.
 		if _, err := runCommand(ctx, "git", []string{"submodule", "update", "--init", "--recursive"}, worktree, env); err != nil {
 			return err
 		}
@@ -239,6 +250,8 @@ func prepareGitFeatures(ctx context.Context, worktree string, env []string) erro
 		}
 	}
 
+	// Use Git's attribute parser in one NUL-delimited batch so LFS detection
+	// follows Git's effective .gitattributes rules without per-file processes.
 	files, err := runCommand(ctx, "git", []string{"ls-files", "-z"}, worktree, nil)
 	if err != nil {
 		return err
@@ -271,6 +284,9 @@ func prepareGitFeatures(ctx context.Context, worktree string, env []string) erro
 			return err
 		}
 		if strings.HasPrefix(string(data), "version https://git-lfs.github.com/spec/v1\n") {
+			// Only LFS-tracked paths are checked for pointer content. That catches
+			// failed hydration without rejecting an ordinary text file that happens
+			// to contain similar-looking content.
 			return fmt.Errorf("Git LFS pointer files remain after git lfs pull")
 		}
 	}
@@ -278,6 +294,7 @@ func prepareGitFeatures(ctx context.Context, worktree string, env []string) erro
 }
 
 func lfsPathsFromCheckAttr(output string) []string {
+	// "git check-attr -z" emits triples: path, attribute name, attribute value.
 	fields := strings.Split(output, "\x00")
 	var paths []string
 	for i := 0; i+2 < len(fields); i += 3 {
@@ -305,6 +322,8 @@ func copySourceToIncoming(ctx context.Context, source, incoming string, layout s
 	args := []string{"-a", "--delete", "--exclude-from=" + excludePath}
 	if current := currentReleasePath(layout); current != "" {
 		if info, err := os.Stat(current); err == nil && info.IsDir() {
+			// Link-dest hardlinks unchanged files against the active release. The
+			// checksum/no-times pair avoids timestamp drift deciding reuse.
 			args = append(args, "--checksum", "--no-times", "--link-dest="+current)
 		}
 	}
