@@ -165,6 +165,25 @@ awk '
   END { exit found ? 1 : 0 }
 ' "$cli" || fail "top-level lines should start at column 0"
 awk '
+  /\[\[.*\]\][[:space:]]*(&&|\|\|)/ {
+    printf "terse [[ ]] conditional chain at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  /\(\(.*\)\)[[:space:]]*(&&|\|\|)/ {
+    printf "terse arithmetic conditional chain at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  /[[:space:]]\|\|[[:space:]]+(die|engine_die)([[:space:]]|$)/ {
+    printf "terse fatal fallback at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  /[[:space:]]&&[[:space:]][A-Za-z_][A-Za-z0-9_]*=/ {
+    printf "terse assignment chain at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  END { exit found ? 1 : 0 }
+' "$cli" || fail "conditionals should use readable if blocks instead of terse &&/|| chains"
+awk '
   /^# Runtime, Git, And Repository Helpers/ { in_runtime=1 }
   /^# Deploy Orchestration And Release Metadata/ { exit seen_repo_dir ? 0 : 1 }
   in_runtime && /^repo_dir_for\(\) \{/ { seen_repo_dir=1 }

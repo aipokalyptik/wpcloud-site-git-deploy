@@ -13,6 +13,8 @@ readonly DEFAULT_KEEP_RELEASES="3"
 readonly DEFAULT_MAINTENANCE_FILE=".maintenance"
 # Web-visible deployment namespace under the docroot.
 readonly DOCROOT_NAMESPACE=".wpcloud-site-git-deploy"
+# Strip the leading dot once so temporary filenames can reuse the namespace
+# without creating hidden path components inside operator-facing directories.
 readonly DOCROOT_NAMESPACE_SUFFIX="${DOCROOT_NAMESPACE#.}"
 readonly DOCROOT_NAMESPACE_REGEX="\\.wpcloud-site-git-deploy"
 # WordPress-managed runtime paths that should never be claimed by a Git deploy.
@@ -22,8 +24,14 @@ readonly -a REJECTED_SHARED_PATHS=(wp-content/cache wp-content/upgrade .maintena
 readonly -a SHARED_CONTAINER_PATHS=(wp-content/uploads wp-content/blogs.dir)
 # Location of this checked-out or installed CLI. Source installs use REPO_ROOT
 # to find the bundled helper; managed installs primarily use STATE_DIR instead.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(
+cd "$(dirname "${BASH_SOURCE[0]}")"
+pwd
+)"
+REPO_ROOT="$(
+cd "$SCRIPT_DIR/.."
+pwd
+)"
 # Tool-owned runtime state. Override with WPCLOUD_SITE_GIT_DEPLOY_HOME in tests
 # or nonstandard installs; production defaults to the site SSH user's HOME.
 STATE_DIR="${WPCLOUD_SITE_GIT_DEPLOY_HOME:-$HOME/.wpcloud-site-git-deploy}"
@@ -83,11 +91,20 @@ die() {
 }
 
 require_name() {
-  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || die "deployment name must contain only letters, numbers, dot, underscore, or dash"
+  if [[ ! "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    die "deployment name must contain only letters, numbers, dot, underscore, or dash"
+  fi
 }
 
 is_positive_int() {
-  [[ "${1:-}" =~ ^[0-9]+$ ]] && ((10#$1 >= 1))
+  # 10# forces base-10 arithmetic so values with a leading zero are not treated
+  # as octal by Bash arithmetic expansion.
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    if ((10#$1 >= 1)); then
+      return 0
+    fi
+  fi
+  return 1
 }
 
 # Command Argument Helpers
@@ -113,7 +130,9 @@ args_is_registered_flag() {
   local registered
 
   for registered in "${ARGS_FLAGS[@]}"; do
-    [[ "$option" == "$registered" ]] && return 0
+    if [[ "$option" == "$registered" ]]; then
+      return 0
+    fi
   done
   return 1
 }
@@ -123,7 +142,9 @@ args_is_registered_value() {
   local registered
 
   for registered in "${ARGS_VALUES[@]}"; do
-    [[ "$option" == "$registered" ]] && return 0
+    if [[ "$option" == "$registered" ]]; then
+      return 0
+    fi
   done
   return 1
 }
@@ -136,18 +157,27 @@ args_finish() {
 
   while ((index < ${#ARGS[@]})); do
     arg="${ARGS[$index]}"
+    # For --option=value syntax, the option name is the part before the first
+    # equals sign; space-separated --option value arguments remain unchanged.
     option="${arg%%=*}"
 
     if args_is_registered_flag "$arg"; then
       index=$((index + 1))
       continue
     fi
-    if [[ "$arg" == *=* && "$arg" == --* ]] && args_is_registered_value "$option"; then
-      index=$((index + 1))
-      continue
+    if [[ "$arg" == *=* ]]; then
+      if [[ "$arg" == --* ]]; then
+        if args_is_registered_value "$option"; then
+          index=$((index + 1))
+          continue
+        fi
+      fi
     fi
     if args_is_registered_value "$arg"; then
-      if ((index + 1 >= ${#ARGS[@]})) || [[ "${ARGS[$((index + 1))]}" == --* ]]; then
+      if ((index + 1 >= ${#ARGS[@]})); then
+        "$ARGS_DIE_FUNC" "$arg requires a value"
+      fi
+      if [[ "${ARGS[$((index + 1))]}" == --* ]]; then
         "$ARGS_DIE_FUNC" "$arg requires a value"
       fi
       index=$((index + 2))
@@ -170,8 +200,12 @@ arg_has() {
   local index
 
   ARGS_FLAGS+=("$needle")
+  # Iterate by index so later parser helpers can use the same argv snapshot
+  # without consuming positional parameters.
   for index in "${!ARGS[@]}"; do
-    [[ "${ARGS[$index]}" == "$needle" ]] && return 0
+    if [[ "${ARGS[$index]}" == "$needle" ]]; then
+      return 0
+    fi
   done
   return 1
 }
@@ -192,21 +226,37 @@ arg_read_value_count() {
     arg="${ARGS[$index]}"
     if [[ "$arg" == "$key" ]]; then
       value_index=$((index + 1))
-      ((value_index < ${#ARGS[@]})) || "$ARGS_DIE_FUNC" "$key requires a value"
+      if ((value_index >= ${#ARGS[@]})); then
+        "$ARGS_DIE_FUNC" "$key requires a value"
+      fi
       arg_parsed_value="${ARGS[$value_index]}"
-      [[ "$arg_parsed_value" != --* ]] || "$ARGS_DIE_FUNC" "$key requires a value"
+      if [[ "$arg_parsed_value" == --* ]]; then
+        "$ARGS_DIE_FUNC" "$key requires a value"
+      fi
+      # printf -v assigns without command substitution, which avoids losing
+      # state in a subshell while still preserving exact string contents.
       printf -v "$dest" '%s' "$arg_parsed_value"
       arg_parsed_count=$((arg_parsed_count + 1))
     elif [[ "$arg" == "$key="* ]]; then
+      # For --option=value, keep everything after the first equals sign as the
+      # caller's value. Additional equals signs are part of the value.
       arg_parsed_value="${arg#*=}"
-      [[ -n "$arg_parsed_value" || -n "$validator" ]] || "$ARGS_DIE_FUNC" "$key requires a value"
+      if [[ -z "$arg_parsed_value" ]]; then
+        if [[ -z "$validator" ]]; then
+          "$ARGS_DIE_FUNC" "$key requires a value"
+        fi
+      fi
       printf -v "$dest" '%s' "$arg_parsed_value"
       arg_parsed_count=$((arg_parsed_count + 1))
     fi
   done
 
-  if ((arg_parsed_count > 0)) && [[ -n "$validator" ]]; then
-    "$validator" "${!dest}"
+  if ((arg_parsed_count > 0)); then
+    if [[ -n "$validator" ]]; then
+      # Indirect expansion reads the variable named by $dest so validators see
+      # the value just assigned with printf -v.
+      "$validator" "${!dest}"
+    fi
   fi
   printf -v "$count_dest" '%s' "$arg_parsed_count"
 }
@@ -246,7 +296,12 @@ arg_ref_choice() {
     parsed_value=""
     arg_read_value_count parsed_value parsed_count "$option_name"
     if ((parsed_count > 0)); then
-      ((found == 0 && parsed_count == 1)) || "$ARGS_DIE_FUNC" "choose only one ref"
+      if ((found != 0)); then
+        "$ARGS_DIE_FUNC" "choose only one ref"
+      fi
+      if ((parsed_count != 1)); then
+        "$ARGS_DIE_FUNC" "choose only one ref"
+      fi
       printf -v "$mode_dest" '%s' "$mode_name"
       printf -v "$value_dest" '%s' "$parsed_value"
       found=$((found + parsed_count))
@@ -294,8 +349,12 @@ arg_one_action() {
     fi
   done
 
-  ((action_count > 0)) || "$ARGS_DIE_FUNC" "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
-  ((action_count == 1)) || "$ARGS_DIE_FUNC" "choose only one config option"
+  if ((action_count <= 0)); then
+    "$ARGS_DIE_FUNC" "config requires --deploy-root, --clear-deploy-root, --post-deploy, --clear-post-deploy, or --maintenance-file"
+  fi
+  if ((action_count != 1)); then
+    "$ARGS_DIE_FUNC" "choose only one config option"
+  fi
 }
 
 # Deployment Config And State
@@ -335,7 +394,9 @@ read_required_config_value() {
   local value
 
   value="$(read_config_value "$name" "$key")"
-  [[ -n "$value" ]] || die "deployment config is missing required option: $key"
+  if [[ -z "$value" ]]; then
+    die "deployment config is missing required option: $key"
+  fi
   printf '%s\n' "$value"
 }
 
@@ -347,7 +408,9 @@ write_deployment_config_value() {
   local path
   local tmp_path
 
-  [[ "$value" != *$'\n'* ]] || die "deployment config value must not contain newlines: $key"
+  if [[ "$value" == *$'\n'* ]]; then
+    die "deployment config value must not contain newlines: $key"
+  fi
   dir="$(config_dir "$name")"
   path="$(config_value_path "$name" "$key")"
   tmp_path="$path.tmp.$$"
@@ -371,7 +434,9 @@ load_config() {
 
   require_name "$name"
   dir="$(config_dir "$name")"
-  [[ -d "$dir" ]] || die "deployment is not initialized: $name"
+  if [[ ! -d "$dir" ]]; then
+    die "deployment is not initialized: $name"
+  fi
 
   repo_url="$(read_required_config_value "$name" repo_url)"
   docroot="$(read_required_config_value "$name" docroot)"
@@ -425,8 +490,12 @@ write_config() {
 require_post_deploy_path() {
   local value="$1"
 
-  [[ -n "$value" ]] || die "post-deploy path must not be empty"
-  [[ "$value" != *$'\n'* ]] || die "post-deploy path must not contain newlines"
+  if [[ -z "$value" ]]; then
+    die "post-deploy path must not be empty"
+  fi
+  if [[ "$value" == *$'\n'* ]]; then
+    die "post-deploy path must not contain newlines"
+  fi
 }
 
 require_maintenance_file() {
@@ -439,22 +508,42 @@ require_maintenance_file() {
     return 0
   fi
 
-  [[ -n "$value" ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
-  [[ "$value" != /* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
-  [[ "$value" != *$'\n'* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
-  [[ "$value" != */ ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
-  [[ "$value" != *//* ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+  if [[ -z "$value" ]]; then
+    "$die_fn" "maintenance-file must be a safe relative path or none"
+  fi
+  if [[ "$value" == /* ]]; then
+    "$die_fn" "maintenance-file must be a safe relative path or none"
+  fi
+  if [[ "$value" == *$'\n'* ]]; then
+    "$die_fn" "maintenance-file must be a safe relative path or none"
+  fi
+  if [[ "$value" == */ ]]; then
+    "$die_fn" "maintenance-file must be a safe relative path or none"
+  fi
+  if [[ "$value" == *//* ]]; then
+    "$die_fn" "maintenance-file must be a safe relative path or none"
+  fi
 
   rest="$value"
   while [[ -n "$rest" ]]; do
     if [[ "$rest" == */* ]]; then
+      # Take the path component before the first slash, then remove that
+      # component and slash so the next loop iteration can inspect the rest.
       component="${rest%%/*}"
       rest="${rest#*/}"
     else
       component="$rest"
       rest=""
     fi
-    [[ "$component" != "." && "$component" != ".." && -n "$component" ]] || "$die_fn" "maintenance-file must be a safe relative path or none"
+    if [[ "$component" == "." ]]; then
+      "$die_fn" "maintenance-file must be a safe relative path or none"
+    fi
+    if [[ "$component" == ".." ]]; then
+      "$die_fn" "maintenance-file must be a safe relative path or none"
+    fi
+    if [[ -z "$component" ]]; then
+      "$die_fn" "maintenance-file must be a safe relative path or none"
+    fi
   done
 }
 
@@ -465,20 +554,32 @@ require_deploy_root() {
 
   # Empty would be ambiguous with the default repository root. Callers clear
   # deploy_root explicitly instead of storing an empty configured path.
-  [[ -n "$value" ]] || die "deploy-root must be a safe relative path"
+  if [[ -z "$value" ]]; then
+    die "deploy-root must be a safe relative path"
+  fi
   # Absolute paths would let deploy-root escape the checked-out repository.
-  [[ "$value" != /* ]] || die "deploy-root must be a safe relative path"
+  if [[ "$value" == /* ]]; then
+    die "deploy-root must be a safe relative path"
+  fi
   # Newlines would corrupt the one-value-per-file config and metadata format.
-  [[ "$value" != *$'\n'* ]] || die "deploy-root must be a safe relative path"
+  if [[ "$value" == *$'\n'* ]]; then
+    die "deploy-root must be a safe relative path"
+  fi
   # A trailing slash creates an empty final component and makes equivalent
   # paths serialize differently.
-  [[ "$value" != */ ]] || die "deploy-root must be a safe relative path"
+  if [[ "$value" == */ ]]; then
+    die "deploy-root must be a safe relative path"
+  fi
   # Repeated slashes create empty interior components and ambiguous spelling.
-  [[ "$value" != *//* ]] || die "deploy-root must be a safe relative path"
+  if [[ "$value" == *//* ]]; then
+    die "deploy-root must be a safe relative path"
+  fi
 
   rest="$value"
   while [[ -n "$rest" ]]; do
     if [[ "$rest" == */* ]]; then
+      # Take the next slash-separated path component and leave the unvalidated
+      # suffix in rest for the following loop iteration.
       component="${rest%%/*}"
       rest="${rest#*/}"
     else
@@ -487,7 +588,15 @@ require_deploy_root() {
     fi
     # Reject empty, current-directory, and parent-directory components so the
     # deploy source is always a normal subdirectory inside the worktree.
-    [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || die "deploy-root must be a safe relative path"
+    if [[ -z "$component" ]]; then
+      die "deploy-root must be a safe relative path"
+    fi
+    if [[ "$component" == "." ]]; then
+      die "deploy-root must be a safe relative path"
+    fi
+    if [[ "$component" == ".." ]]; then
+      die "deploy-root must be a safe relative path"
+    fi
   done
 }
 
@@ -501,9 +610,13 @@ git_ssh_command() {
   local command
   local quoted_key_path
 
-  [[ -n "$key_path" ]] || return 1
+  if [[ -z "$key_path" ]]; then
+    return 1
+  fi
 
   # -i pins Git to the deployment-specific private key from config.
+  # %q produces a shell-escaped path because GIT_SSH_COMMAND is parsed by ssh's
+  # shell command invocation rather than passed as an argv array.
   printf -v quoted_key_path '%q' "$key_path"
   command="ssh -i $quoted_key_path"
   # IdentitiesOnly prevents ssh-agent or default keys from changing which
@@ -544,15 +657,19 @@ mv_exchange_available() {
   local right
   local result=1
 
-  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-mv-exchange.XXXXXX")" || return 1
+  if ! probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-mv-exchange.XXXXXX")"; then
+    return 1
+  fi
   left="$probe_dir/left"
   right="$probe_dir/right"
   printf 'left\n' >"$left"
   printf 'right\n' >"$right"
-  if mv --exchange -- "$left" "$right" 2>/dev/null &&
-    [[ "$(cat "$left")" == "right" ]] &&
-    [[ "$(cat "$right")" == "left" ]]; then
-    result=0
+  if mv --exchange -- "$left" "$right" 2>/dev/null; then
+    if [[ "$(cat "$left")" == "right" ]]; then
+      if [[ "$(cat "$right")" == "left" ]]; then
+        result=0
+      fi
+    fi
   fi
   rm -rf -- "$probe_dir"
   return "$result"
@@ -571,14 +688,20 @@ ensure_helper() {
     return 0
   fi
 
-  if path_helper="$(command -v exchange-rename 2>/dev/null)" && [[ -x "$path_helper" ]]; then
-    printf '%s\n' "$path_helper"
-    return 0
+  if path_helper="$(command -v exchange-rename 2>/dev/null)"; then
+    if [[ -x "$path_helper" ]]; then
+      printf '%s\n' "$path_helper"
+      return 0
+    fi
   fi
 
-  [[ "$(uname -s)" == "Linux" ]] || die "exchange helper installation requires Linux; run on the site host, Linux CI, or a Linux container/VM"
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    die "exchange helper installation requires Linux; run on the site host, Linux CI, or a Linux container/VM"
+  fi
 
-  [[ -f "$HELPER_SOURCE" ]] || die "exchange helper source binary not found: $HELPER_SOURCE"
+  if [[ ! -f "$HELPER_SOURCE" ]]; then
+    die "exchange helper source binary not found: $HELPER_SOURCE"
+  fi
   cp "$HELPER_SOURCE" "$helper"
   chmod 755 "$helper"
   printf '%s\n' "$helper"
@@ -686,7 +809,19 @@ prepare_git_features() {
   git -C "$worktree" ls-files -z >"$files_list"
   git -C "$worktree" check-attr filter --stdin -z <"$files_list" >"$attrs_list"
   : >"$lfs_paths_list"
-  while IFS= read -r -d '' path && IFS= read -r -d '' _ && IFS= read -r -d '' attr; do
+  # git check-attr -z returns triples of NUL-delimited fields:
+  # path, attribute name, and attribute value. Read each field separately so the
+  # loop describes that record shape instead of hiding it in a compact condition.
+  while true; do
+    if ! IFS= read -r -d '' path; then
+      break
+    fi
+    if ! IFS= read -r -d '' _; then
+      break
+    fi
+    if ! IFS= read -r -d '' attr; then
+      break
+    fi
     if [[ "$attr" == "lfs" ]]; then
       uses_lfs=1
       printf '%s\0' "$path" >>"$lfs_paths_list"
@@ -695,10 +830,19 @@ prepare_git_features() {
   rm -f "$files_list" "$attrs_list"
 
   if ((uses_lfs)); then
-    command -v git-lfs >/dev/null 2>&1 || die "git-lfs is required for repositories using Git LFS"
-    (cd "$worktree" && git_lfs_with_auth install --local) >&2
-    (cd "$worktree" && git_lfs_with_auth pull) >&2
+    if ! command -v git-lfs >/dev/null 2>&1; then
+      die "git-lfs is required for repositories using Git LFS"
+    fi
+    (
+      cd "$worktree"
+      git_lfs_with_auth install --local
+    ) >&2
+    (
+      cd "$worktree"
+      git_lfs_with_auth pull
+    ) >&2
     : >"$lfs_pointer_paths"
+    # lfs_paths_list is NUL-delimited because Git paths may contain whitespace.
     while IFS= read -r -d '' path; do
       if grep -Il '^version https://git-lfs.github.com/spec/v1$' -- "$worktree/$path" >/dev/null 2>&1; then
         printf '%s\n' "$path" >>"$lfs_pointer_paths"
@@ -810,6 +954,8 @@ create_worktree() {
 
   repo_dir="$(repo_dir_for "$name")"
   worktree="$TMP_DIR/$name/$release_id/source"
+  # The :? guards prevent rm -rf from running with an accidentally empty state
+  # directory, deployment name, or release id.
   rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
   mkdir -p "$(dirname "$worktree")"
 
@@ -817,8 +963,11 @@ create_worktree() {
   git -C "$repo_dir" worktree add --detach "$worktree" "$commit" >&2
   if ! prepare_git_features "$worktree"; then
     cleanup_worktree_path "$repo_dir" "$worktree"
+    # Repeat the same :? protected path removal after failed feature prep.
     rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
-    rmdir "$TMP_DIR/$name" 2>/dev/null || true
+    if ! rmdir "$TMP_DIR/$name" 2>/dev/null; then
+      :
+    fi
     return 1
   fi
   printf '%s\n' "$worktree"
@@ -832,15 +981,20 @@ cleanup_worktree() {
 
   repo_dir="$(repo_dir_for "$name")"
   cleanup_worktree_path "$repo_dir" "$worktree"
+  # Keep the destructive cleanup tied to required path components.
   rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
-  rmdir "$TMP_DIR/$name" 2>/dev/null || true
+  if ! rmdir "$TMP_DIR/$name" 2>/dev/null; then
+    :
+  fi
 }
 
 cleanup_worktree_path() {
   local repo_dir="$1"
   local worktree="$2"
 
-  git -C "$repo_dir" worktree remove --force "$worktree" 2>/dev/null || rm -rf "$worktree"
+  if ! git -C "$repo_dir" worktree remove --force "$worktree" 2>/dev/null; then
+    rm -rf "$worktree"
+  fi
   git -C "$repo_dir" worktree prune
 }
 
@@ -873,9 +1027,10 @@ copy_worktree_to_incoming() {
   mkdir -p "$incoming"
   default_exclude_file "$exclude_file"
 
-  current_release="$(current_release_id || true)"
-  if [[ -n "$current_release" && -d "$(release_dir_for "$base" "$current_release")" ]]; then
-    link_dest="$(release_dir_for "$base" "$current_release")"
+  if current_release="$(current_release_id)"; then
+    if [[ -d "$(release_dir_for "$base" "$current_release")" ]]; then
+      link_dest="$(release_dir_for "$base" "$current_release")"
+    fi
   fi
 
   rsync_args=(-a --delete --exclude-from="$exclude_file")
@@ -918,7 +1073,9 @@ write_metadata_value() {
   local path="$metadata_dir/cfg-$key"
   local tmp_path="$path.tmp.$$"
 
-  [[ "$value" != *$'\n'* ]] || die "release metadata value must not contain newlines: $key"
+  if [[ "$value" == *$'\n'* ]]; then
+    die "release metadata value must not contain newlines: $key"
+  fi
   printf '%s\n' "$value" >"$tmp_path"
   mv -f "$tmp_path" "$path"
 }
@@ -928,7 +1085,9 @@ metadata_value() {
   local key="$2"
   local path="$metadata_dir/cfg-$key"
 
-  [[ -f "$path" ]] || return 0
+  if [[ ! -f "$path" ]]; then
+    return 0
+  fi
   cat "$path"
 }
 
@@ -936,10 +1095,16 @@ current_release_metadata_dir() {
   local current
   local metadata_dir
 
-  current="$(current_release_id || true)"
-  [[ -n "$current" ]] || return 1
+  if ! current="$(current_release_id)"; then
+    current=""
+  fi
+  if [[ -z "$current" ]]; then
+    return 1
+  fi
   metadata_dir="$(release_metadata_dir "$current")"
-  [[ -d "$metadata_dir" ]] || return 1
+  if [[ ! -d "$metadata_dir" ]]; then
+    return 1
+  fi
   printf '%s\n' "$metadata_dir"
 }
 
@@ -950,11 +1115,19 @@ current_release_matches() {
   local metadata_commit
   local metadata_deploy_root
 
-  metadata_dir="$(current_release_metadata_dir)" || return 1
+  if ! metadata_dir="$(current_release_metadata_dir)"; then
+    return 1
+  fi
   metadata_commit="$(metadata_value "$metadata_dir" commit)"
   metadata_deploy_root="$(metadata_value "$metadata_dir" deploy_root)"
 
-  [[ "$metadata_commit" == "$commit" && "$metadata_deploy_root" == "$expected_deploy_root" ]]
+  if [[ "$metadata_commit" != "$commit" ]]; then
+    return 1
+  fi
+  if [[ "$metadata_deploy_root" != "$expected_deploy_root" ]]; then
+    return 1
+  fi
+  return 0
 }
 
 run_engine_subshell() {
@@ -1011,9 +1184,11 @@ deploy_ref() {
   effective_maintenance_file="${maintenance_file_override:-${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}}"
   fetch_repo "$name"
   commit="$(resolve_ref "$name" "$mode" "$value")"
-  if [[ "$force" != "1" ]] && current_release_matches "$commit" "${deploy_root:-}"; then
-    printf 'no-op %s %s %s\n' "$(current_release_id)" "$mode" "$commit"
-    return 0
+  if [[ "$force" != "1" ]]; then
+    if current_release_matches "$commit" "${deploy_root:-}"; then
+      printf 'no-op %s %s %s\n' "$(current_release_id)" "$mode" "$commit"
+      return 0
+    fi
   fi
   release_id="$(make_release_id "$commit")"
   worktree="$(create_worktree "$name" "$commit" "$release_id")"
@@ -1039,7 +1214,9 @@ current_release_id() {
 
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
   current="$(current_path_for "$base")"
-  [[ -L "$current" ]] || return 1
+  if [[ ! -L "$current" ]]; then
+    return 1
+  fi
   readlink "$current" | sed 's#^releases/##'
 }
 
@@ -1058,9 +1235,15 @@ select_rollback_release() {
   : >"$metadata_candidates"
   find "$(metadata_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r metadata_dir; do
+      # Keep only the final path component from the metadata directory path;
+      # metadata directories are named by release id.
       release_name="${metadata_dir##*/}"
-      [[ "$release_name" == "$current" ]] && continue
-      [[ -d "$(release_dir_for "$base" "$release_name")" ]] || continue
+      if [[ "$release_name" == "$current" ]]; then
+        continue
+      fi
+      if [[ ! -d "$(release_dir_for "$base" "$release_name")" ]]; then
+        continue
+      fi
       release_dir_for "$base" "$release_name"
     done >"$metadata_candidates"
 
@@ -1075,7 +1258,10 @@ select_rollback_release() {
 
   find "$(releases_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r path; do
-      [[ "${path##*/}" == "$current" ]] && continue
+      # Compare only the final path component, which is the release id.
+      if [[ "${path##*/}" == "$current" ]]; then
+        continue
+      fi
       printf '%s\n' "$path"
     done |
     xargs ls -dt 2>/dev/null |
@@ -1092,18 +1278,33 @@ repo_host_from_url() {
   local url="$1"
 
   if [[ "$url" =~ ^[^@:/]+@([^:/]+):.+$ ]]; then
+    # BASH_REMATCH[1] is the host captured from scp-style user@host:path URLs.
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
   if [[ "$url" =~ ^ssh://[^@]+@([^/]+)/.+$ ]]; then
+    # BASH_REMATCH[1] is the host captured from ssh://user@host/path URLs.
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
   if [[ "$url" =~ ^https://([^/]+)/.+$ ]]; then
+    # BASH_REMATCH[1] is the host captured from https://host/path URLs.
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
-  if [[ -d "$url" || "$url" == /* || "$url" == ./* || "$url" == ../* ]]; then
+  if [[ -d "$url" ]]; then
+    printf 'local\n'
+    return 0
+  fi
+  if [[ "$url" == /* ]]; then
+    printf 'local\n'
+    return 0
+  fi
+  if [[ "$url" == ./* ]]; then
+    printf 'local\n'
+    return 0
+  fi
+  if [[ "$url" == ../* ]]; then
     printf 'local\n'
     return 0
   fi
@@ -1115,12 +1316,22 @@ https_to_ssh() {
   local host
   local path
 
-  [[ "$url" =~ ^https://([^/]+)/(.+)$ ]] || return 1
+  if [[ ! "$url" =~ ^https://([^/]+)/(.+)$ ]]; then
+    return 1
+  fi
+  # BASH_REMATCH contains the host and repository path captured by the regex
+  # above; this turns any https://host/path form into git@host:path.
   host="${BASH_REMATCH[1]}"
   path="${BASH_REMATCH[2]}"
+  # Strip one leading slash defensively, even though the regex capture normally
+  # starts after the slash between host and path.
   path="${path#/}"
-  [[ -n "$host" ]] || return 1
-  [[ -n "$path" ]] || return 1
+  if [[ -z "$host" ]]; then
+    return 1
+  fi
+  if [[ -z "$path" ]]; then
+    return 1
+  fi
   printf 'git@%s:%s\n' "$host" "$path"
 }
 
@@ -1133,6 +1344,8 @@ private_key_public_key() {
 key_mode_too_open() {
   local mode="$1"
 
+  # 8# interprets the mode string as octal, then the mask checks whether any
+  # group or other permission bits are set.
   (( (8#$mode) & 0077 ))
 }
 
@@ -1140,14 +1353,22 @@ validate_existing_private_key() {
   local path="$1"
   local mode
 
-  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
-  [[ -f "$path" ]] || die "private key is missing: $path"
-  [[ -r "$path" ]] || die "private key is not readable: $path"
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    die "ssh-keygen is required to validate deploy keys"
+  fi
+  if [[ ! -f "$path" ]]; then
+    die "private key is missing: $path"
+  fi
+  if [[ ! -r "$path" ]]; then
+    die "private key is not readable: $path"
+  fi
   mode="$(stat -c '%a' "$path")"
   if key_mode_too_open "$mode"; then
     die "private key permissions are too open: $mode"
   fi
-  private_key_public_key "$path" >/dev/null || die "private key cannot be used without prompting or is not a valid private key: $path"
+  if ! private_key_public_key "$path" >/dev/null; then
+    die "private key cannot be used without prompting or is not a valid private key: $path"
+  fi
 }
 
 derive_public_key_file() {
@@ -1155,7 +1376,9 @@ derive_public_key_file() {
   local public_key_path="$2"
   local tmp
 
-  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate deploy keys"
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    die "ssh-keygen is required to validate deploy keys"
+  fi
   tmp="$(mktemp "${public_key_path}.tmp.XXXXXX")"
   if ! private_key_public_key "$private_key" >"$tmp"; then
     rm -f "$tmp"
@@ -1182,18 +1405,27 @@ auth_resolve_key() {
     printf 'Using existing deploy key: %s\n' "$key_path"
   elif [[ -n "$import_key" ]]; then
     validate_existing_private_key "$import_key"
-    if [[ -e "$import_key" && -e "$key_path" ]]; then
-      import_key_real="$(readlink -f "$import_key")"
-      key_path_real="$(readlink -f "$key_path")"
+    if [[ -e "$import_key" ]]; then
+      if [[ -e "$key_path" ]]; then
+        import_key_real="$(readlink -f "$import_key")"
+        key_path_real="$(readlink -f "$key_path")"
+      else
+        import_key_real=""
+        key_path_real=""
+      fi
     else
       import_key_real=""
       key_path_real=""
     fi
-    if [[ -n "$import_key_real" && "$import_key_real" == "$key_path_real" ]]; then
-      die "cannot import the managed deploy key onto itself: $key_path"
+    if [[ -n "$import_key_real" ]]; then
+      if [[ "$import_key_real" == "$key_path_real" ]]; then
+        die "cannot import the managed deploy key onto itself: $key_path"
+      fi
     fi
-    if [[ -e "$key_path" && "$force_new_key" -ne 1 ]]; then
-      die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
+    if [[ -e "$key_path" ]]; then
+      if [[ "$force_new_key" -ne 1 ]]; then
+        die "managed deploy key already exists: $key_path; use --force-new-key to replace it or --use-key PATH to reference an existing key without copying"
+      fi
     fi
     rm -f "$key_path" "$key_path.pub"
     mkdir -p "$KEYS_DIR"
@@ -1210,10 +1442,17 @@ auth_resolve_key() {
     if [[ -f "$key_path" ]]; then
       printf 'Reusing existing deploy key: %s\n' "$key_path"
     else
-      command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
+      if ! command -v ssh-keygen >/dev/null 2>&1; then
+        die "ssh-keygen is required to create a deploy key"
+      fi
       mkdir -p "$KEYS_DIR"
       chmod 700 "$KEYS_DIR"
-      (umask 077 && ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null)
+      # umask 077 ensures ssh-keygen creates the private key owner-only even
+      # before the explicit chmod below.
+      (
+        umask 077
+        ssh-keygen -t ed25519 -N '' -C "wpcloud-site-git-deploy:$name" -f "$key_path" >/dev/null
+      )
       chmod 600 "$key_path"
       chmod 644 "$key_path.pub"
       printf 'Created deploy key: %s\n' "$key_path"
@@ -1287,9 +1526,11 @@ doctor_check_exchange() {
     printf 'OK exchange: mv --exchange available\n'
     return 0
   fi
-  if helper="$(ensure_helper 2>/dev/null)" && [[ -x "$helper" ]]; then
-    printf 'OK helper: exchange-rename available: %s\n' "$helper"
-    return 0
+  if helper="$(ensure_helper 2>/dev/null)"; then
+    if [[ -x "$helper" ]]; then
+      printf 'OK helper: exchange-rename available: %s\n' "$helper"
+      return 0
+    fi
   fi
 
   printf 'FAIL exchange: mv --exchange and exchange-rename helper are unavailable\n'
@@ -1341,13 +1582,15 @@ doctor_check_git_lfs() {
   local repo_dir
 
   repo_dir="$(repo_dir_for "$name")"
-  if [[ -d "$repo_dir/.git" ]] && git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
-    if command -v git-lfs >/dev/null 2>&1; then
-      printf 'OK git-lfs: available for cached LFS-tracked repository\n'
-      return 0
+  if [[ -d "$repo_dir/.git" ]]; then
+    if git -C "$repo_dir" grep -q 'filter=lfs' HEAD -- .gitattributes >/dev/null 2>&1; then
+      if command -v git-lfs >/dev/null 2>&1; then
+        printf 'OK git-lfs: available for cached LFS-tracked repository\n'
+        return 0
+      fi
+      printf 'FAIL git-lfs: git-lfs is required for cached LFS-tracked repository\n'
+      return 1
     fi
-    printf 'FAIL git-lfs: git-lfs is required for cached LFS-tracked repository\n'
-    return 1
   fi
 
   printf 'WARN git-lfs: not checked; no root .gitattributes LFS marker found in cached HEAD\n'
@@ -1381,7 +1624,9 @@ doctor_check_git_remote() {
 
 cmd_auth() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local force_new_key=0
   local verify=0
   local remove=0
@@ -1396,10 +1641,18 @@ cmd_auth() {
   # managed key, external key path, imported managed copy, or removal.
   require_name "$name"
   args_begin_with_die die auth "$@"
-  arg_has --force-new-key && force_new_key=1
-  arg_has --verify && verify=1
-  arg_has --remove && remove=1
-  arg_has --purge-key && purge_key=1
+  if arg_has --force-new-key; then
+    force_new_key=1
+  fi
+  if arg_has --verify; then
+    verify=1
+  fi
+  if arg_has --remove; then
+    remove=1
+  fi
+  if arg_has --purge-key; then
+    purge_key=1
+  fi
   arg_set use_key --use-key
   arg_set import_key --import-key
   args_finish
@@ -1408,7 +1661,16 @@ cmd_auth() {
   ensure_state_dirs
 
   if ((remove)); then
-    if ((verify || force_new_key)) || [[ -n "$use_key" || -n "$import_key" ]]; then
+    if ((verify)); then
+      die "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key"
+    fi
+    if ((force_new_key)); then
+      die "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key"
+    fi
+    if [[ -n "$use_key" ]]; then
+      die "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key"
+    fi
+    if [[ -n "$import_key" ]]; then
       die "--remove cannot be combined with --verify, --force-new-key, --use-key, or --import-key"
     fi
     key_path="${ssh_key_path:-}"
@@ -1416,11 +1678,13 @@ cmd_auth() {
     write_config "$name"
     printf 'Removed deploy key configuration for %s\n' "$name"
     if ((purge_key)); then
-      if [[ -n "$key_path" && "$key_path" == "$KEYS_DIR"/* ]]; then
-        rm -f "$key_path" "$key_path.pub"
-        printf 'Deleted deploy key files for %s\n' "$name"
-      elif [[ -n "$key_path" ]]; then
-        printf 'Did not delete external key files: %s\n' "$key_path"
+      if [[ -n "$key_path" ]]; then
+        if [[ "$key_path" == "$KEYS_DIR"/* ]]; then
+          rm -f "$key_path" "$key_path.pub"
+          printf 'Deleted deploy key files for %s\n' "$name"
+        else
+          printf 'Did not delete external key files: %s\n' "$key_path"
+        fi
       else
         printf 'No deploy key files configured for %s\n' "$name"
       fi
@@ -1431,18 +1695,27 @@ cmd_auth() {
   if ((purge_key)); then
     die "--purge-key requires --remove"
   fi
-  if [[ -n "$use_key" && -n "$import_key" ]]; then
-    die "choose only one deploy key source"
+  if [[ -n "$use_key" ]]; then
+    if [[ -n "$import_key" ]]; then
+      die "choose only one deploy key source"
+    fi
   fi
-  if [[ -n "$use_key" && "$force_new_key" -eq 1 ]]; then
-    die "--force-new-key can only be used with generated or imported keys"
+  if [[ -n "$use_key" ]]; then
+    if [[ "$force_new_key" -eq 1 ]]; then
+      die "--force-new-key can only be used with generated or imported keys"
+    fi
   fi
 
   if [[ "$repo_url" =~ ^https:// ]]; then
-    repo_url="$(https_to_ssh "$repo_url")" || die "could not convert HTTPS URL to SSH"
+    if ! repo_url="$(https_to_ssh "$repo_url")"; then
+      die "could not convert HTTPS URL to SSH"
+    fi
   fi
-  [[ "$repo_url" =~ ^[^@:/]+@[^:/]+:.+$ || "$repo_url" =~ ^ssh://[^@]+@[^/]+/.+$ ]] ||
-    die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
+  if [[ ! "$repo_url" =~ ^[^@:/]+@[^:/]+:.+$ ]]; then
+    if [[ ! "$repo_url" =~ ^ssh://[^@]+@[^/]+/.+$ ]]; then
+      die "repository URL is not a Git SSH or HTTPS URL: $repo_url"
+    fi
+  fi
 
   auth_resolve_key "$name" "$force_new_key" "$use_key" "$import_key"
   key_path="$AUTH_RESOLVED_KEY_PATH"
@@ -1450,7 +1723,12 @@ cmd_auth() {
 
   ssh_key_path="$key_path"
   write_config "$name"
-  host="$(repo_host_from_url "$repo_url" || true)"
+  # repo_host_from_url is best-effort here: if parsing fails, the generic
+  # instruction still prints with an empty host instead of aborting auth after
+  # the key has already been configured.
+  if ! host="$(repo_host_from_url "$repo_url")"; then
+    host=""
+  fi
 
   if [[ "$host" == "github.com" ]]; then
     printf 'Add this public key as a read-only GitHub deploy key for %s:\n' "$repo_url"
@@ -1461,14 +1739,18 @@ cmd_auth() {
   printf 'After adding the key, run: wpcloud-site-git-deploy doctor %s\n' "$name"
 
   if ((verify)); then
-    git_with_auth ls-remote "$repo_url" HEAD >/dev/null || die "remote access failed; add the public key to the repository and try again"
+    if ! git_with_auth ls-remote "$repo_url" HEAD >/dev/null; then
+      die "remote access failed; add the public key to the repository and try again"
+    fi
     printf 'Verified remote access for %s\n' "$repo_url"
   fi
 }
 
 cmd_doctor() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local offline=0
   local doctor_failures=0
 
@@ -1476,7 +1758,9 @@ cmd_doctor() {
   # first-time user gets a complete repair checklist.
   require_name "$name"
   args_begin_with_die die doctor "$@"
-  arg_has --offline && offline=1
+  if arg_has --offline; then
+    offline=1
+  fi
   args_finish
 
   if load_config "$name"; then
@@ -1486,20 +1770,36 @@ cmd_doctor() {
     return 1
   fi
 
-  doctor_check_commands || doctor_failures=$((doctor_failures + 1))
-  doctor_check_docroot || doctor_failures=$((doctor_failures + 1))
-  doctor_check_repo_url || doctor_failures=$((doctor_failures + 1))
-  doctor_check_exchange || doctor_failures=$((doctor_failures + 1))
-  doctor_check_ssh_key || doctor_failures=$((doctor_failures + 1))
-  doctor_check_git_lfs "$name" || doctor_failures=$((doctor_failures + 1))
-  doctor_check_git_remote "$offline" || doctor_failures=$((doctor_failures + 1))
+  if ! doctor_check_commands; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_docroot; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_repo_url; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_exchange; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_ssh_key; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_git_lfs "$name"; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
+  if ! doctor_check_git_remote "$offline"; then
+    doctor_failures=$((doctor_failures + 1))
+  fi
 
   ((doctor_failures == 0))
 }
 
 cmd_config() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local action=""
   local action_value=""
 
@@ -1545,7 +1845,9 @@ cmd_config() {
 
 cmd_init() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local repo=""
   local init_docroot=""
   local init_deployment_id=""
@@ -1565,12 +1867,24 @@ cmd_init() {
   arg_set init_maintenance_file --maintenance-file
   args_finish
 
-  [[ -n "$repo" ]] || die "--repo is required"
-  [[ -n "$init_docroot" ]] || die "--docroot is required"
-  [[ -n "$init_deployment_id" ]] || die "--deployment-id is required"
-  [[ -n "$init_default_ref" ]] || die "--default-ref is required"
-  [[ "$init_deployment_id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "deployment-id must be a normalized id"
-  is_positive_int "$init_keep_releases" || die "--keep-releases must be a positive integer"
+  if [[ -z "$repo" ]]; then
+    die "--repo is required"
+  fi
+  if [[ -z "$init_docroot" ]]; then
+    die "--docroot is required"
+  fi
+  if [[ -z "$init_deployment_id" ]]; then
+    die "--deployment-id is required"
+  fi
+  if [[ -z "$init_default_ref" ]]; then
+    die "--default-ref is required"
+  fi
+  if [[ ! "$init_deployment_id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    die "deployment-id must be a normalized id"
+  fi
+  if ! is_positive_int "$init_keep_releases"; then
+    die "--keep-releases must be a positive integer"
+  fi
   if [[ -n "$init_deploy_root" ]]; then
     require_deploy_root "$init_deploy_root"
   fi
@@ -1592,7 +1906,9 @@ cmd_init() {
 
 cmd_deploy() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local mode=""
   local value=""
   local force=0
@@ -1601,7 +1917,9 @@ cmd_deploy() {
 
   require_name "$name"
   args_begin_with_die die deploy "$@"
-  arg_has --force && force=1
+  if arg_has --force; then
+    force=1
+  fi
   arg_ref_choice mode value \
     --branch branch \
     --tag tag \
@@ -1610,20 +1928,29 @@ cmd_deploy() {
   arg_set maintenance_file_override --maintenance-file require_maintenance_file
   args_finish
 
-  [[ -n "$mode" && -n "$value" ]] || die "deploy requires --branch, --tag, or --commit"
+  if [[ -z "$mode" ]]; then
+    die "deploy requires --branch, --tag, or --commit"
+  fi
+  if [[ -z "$value" ]]; then
+    die "deploy requires --branch, --tag, or --commit"
+  fi
   deploy_ref "$name" "$mode" "$value" "$force" "$post_deploy_override" "$maintenance_file_override"
 }
 
 cmd_update() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local force=0
   local post_deploy_override=""
   local maintenance_file_override=""
 
   require_name "$name"
   args_begin_with_die die update "$@"
-  arg_has --force && force=1
+  if arg_has --force; then
+    force=1
+  fi
   arg_set post_deploy_override --post-deploy require_post_deploy_path
   arg_set maintenance_file_override --maintenance-file require_maintenance_file
   args_finish
@@ -1634,7 +1961,9 @@ cmd_update() {
 
 cmd_rollback() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local to=""
   local helper
   local current
@@ -1646,11 +1975,15 @@ cmd_rollback() {
 
   load_config "$name"
   helper="$(ensure_helper)"
-  current="$(current_release_id || true)"
+  if ! current="$(current_release_id)"; then
+    current=""
+  fi
   if [[ -z "$to" ]]; then
     to="$(select_rollback_release "$current")"
   fi
-  [[ -n "$to" ]] || die "no rollback release available"
+  if [[ -z "$to" ]]; then
+    die "no rollback release available"
+  fi
   engine_args=(--docroot "$docroot" --deployment-id "$deployment_id" --rollback-to "$to" --maintenance-file "$maintenance_file")
   if [[ -n "$helper" ]]; then
     engine_args+=(--exchange-helper "$helper")
@@ -1672,12 +2005,18 @@ cmd_releases() {
 
   load_config "$name"
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
-  current="$(current_release_id || true)"
+  if ! current="$(current_release_id)"; then
+    current=""
+  fi
   find "$(releases_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r |
   while IFS= read -r release; do
+    # Release directories are named by release id, so the final path component
+    # is the display value and metadata lookup key.
     metadata="$(release_metadata_dir_for "$base" "${release##*/}")"
     printf '%s' "${release##*/}"
-    [[ "${release##*/}" == "$current" ]] && printf ' current'
+    if [[ "${release##*/}" == "$current" ]]; then
+      printf ' current'
+    fi
     if [[ -d "$metadata" ]]; then
       commit="$(metadata_value "$metadata" commit)"
       ref_mode="$(metadata_value "$metadata" ref_mode)"
@@ -1694,12 +2033,16 @@ cmd_releases() {
 
 cmd_branches() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local limit=20
   local fetch=0
 
   args_begin_with_die die branches "$@"
-  arg_has --fetch && fetch=1
+  if arg_has --fetch; then
+    fetch=1
+  fi
   arg_set limit --limit
   args_finish
 
@@ -1717,12 +2060,16 @@ cmd_branches() {
 
 cmd_tags() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local limit=20
   local fetch=0
 
   args_begin_with_die die tags "$@"
-  arg_has --fetch && fetch=1
+  if arg_has --fetch; then
+    fetch=1
+  fi
   arg_set limit --limit
   args_finish
 
@@ -1738,12 +2085,16 @@ cmd_tags() {
 
 cmd_commits() {
   local name="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
   local limit=20
   local fetch=0
 
   args_begin_with_die die commits "$@"
-  arg_has --fetch && fetch=1
+  if arg_has --fetch; then
+    fetch=1
+  fi
   arg_set limit --limit
   args_finish
 
@@ -1768,7 +2119,11 @@ cmd_status() {
   printf 'deploy_root=%s\n' "${deploy_root:-}"
   printf 'post_deploy=%s\n' "${post_deploy:-}"
   printf 'maintenance_file=%s\n' "${maintenance_file:-$DEFAULT_MAINTENANCE_FILE}"
-  printf 'current=%s\n' "$(current_release_id || true)"
+  if current="$(current_release_id)"; then
+    printf 'current=%s\n' "$current"
+  else
+    printf 'current=\n'
+  fi
 }
 
 # Internal Promotion Engine
@@ -1816,6 +2171,8 @@ engine_die() {
 
 trim() {
   local value="$1"
+  # Remove leading whitespace by subtracting the longest all-whitespace prefix,
+  # then remove trailing whitespace with the symmetric suffix expression.
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
@@ -1825,14 +2182,18 @@ engine_require_id() {
   local name="$1"
   local value="$2"
 
-  [[ "$value" =~ ^[a-z0-9][a-z0-9-]*$ ]] || engine_die "$name must be a normalized id"
+  if [[ ! "$value" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    engine_die "$name must be a normalized id"
+  fi
 }
 
 RUN_SCRATCH_DIR=""
 
 cleanup_run_scratch() {
   if [[ -n "$RUN_SCRATCH_DIR" ]]; then
-    rm -rf -- "$RUN_SCRATCH_DIR" 2>/dev/null || true
+    if ! rm -rf -- "$RUN_SCRATCH_DIR" 2>/dev/null; then
+      :
+    fi
   fi
 }
 
@@ -1840,15 +2201,22 @@ maintenance_file_is_tool_owned() {
   local path="$1"
   local deployment_id="$2"
 
-  [[ ! -L "$path" && -f "$path" ]] || return 1
-  {
-    grep -Fxq "wpcloud-site-git-deploy maintenance" "$path" ||
-      grep -Fxq "// wpcloud-site-git-deploy maintenance" "$path"
-  } || return 1
-  {
-    grep -Fxq "deployment_id=$deployment_id" "$path" ||
-      grep -Fxq "// deployment_id=$deployment_id" "$path"
-  } || return 1
+  if [[ -L "$path" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$path" ]]; then
+    return 1
+  fi
+  if ! grep -Fxq "wpcloud-site-git-deploy maintenance" "$path"; then
+    if ! grep -Fxq "// wpcloud-site-git-deploy maintenance" "$path"; then
+      return 1
+    fi
+  fi
+  if ! grep -Fxq "deployment_id=$deployment_id" "$path"; then
+    if ! grep -Fxq "// deployment_id=$deployment_id" "$path"; then
+      return 1
+    fi
+  fi
 }
 
 cleanup_owned_maintenance_file() {
@@ -1857,7 +2225,12 @@ cleanup_owned_maintenance_file() {
   local maintenance_file="$3"
   local path
 
-  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]] || return 0
+  if [[ -z "$maintenance_file" ]]; then
+    return 0
+  fi
+  if [[ "$maintenance_file" == "none" ]]; then
+    return 0
+  fi
   path="$docroot/$maintenance_file"
   if maintenance_file_is_tool_owned "$path" "$deployment_id"; then
     rm -f -- "$path"
@@ -1873,15 +2246,29 @@ create_maintenance_file() {
   local parent
   local tmp_path
 
-  [[ -n "$maintenance_file" && "$maintenance_file" != "none" ]] || return 0
+  if [[ -z "$maintenance_file" ]]; then
+    return 0
+  fi
+  if [[ "$maintenance_file" == "none" ]]; then
+    return 0
+  fi
 
   ENGINE_MAINTENANCE_OWNED=0
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
   path="$docroot/$maintenance_file"
-  [[ ! -e "$path" && ! -L "$path" ]] || return 0
+  if [[ -e "$path" ]]; then
+    return 0
+  fi
+  if [[ -L "$path" ]]; then
+    return 0
+  fi
 
+  # Drop the filename to inspect the parent directory for the maintenance file.
   parent="${path%/*}"
-  [[ -d "$parent" ]] || engine_die "maintenance-file parent does not exist: ${maintenance_file%/*}"
+  if [[ ! -d "$parent" ]]; then
+    # The message reports the configured parent path, not the full docroot path.
+    engine_die "maintenance-file parent does not exist: ${maintenance_file%/*}"
+  fi
 
   tmp_path="$path.$$"
   rm -f -- "$tmp_path"
@@ -1905,11 +2292,15 @@ ENGINE_MV_EXCHANGE=0
 
 cleanup_engine_exit() {
   cleanup_run_scratch
-  if [[ "$ENGINE_MAINTENANCE_OWNED" == "1" && -n "$ENGINE_MAINTENANCE_DOCROOT" && -n "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" ]]; then
-    cleanup_owned_maintenance_file \
-      "$ENGINE_MAINTENANCE_DOCROOT" \
-      "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" \
-      "$ENGINE_MAINTENANCE_FILE"
+  if [[ "$ENGINE_MAINTENANCE_OWNED" == "1" ]]; then
+    if [[ -n "$ENGINE_MAINTENANCE_DOCROOT" ]]; then
+      if [[ -n "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" ]]; then
+        cleanup_owned_maintenance_file \
+          "$ENGINE_MAINTENANCE_DOCROOT" \
+          "$ENGINE_MAINTENANCE_DEPLOYMENT_ID" \
+          "$ENGINE_MAINTENANCE_FILE"
+      fi
+    fi
   fi
 }
 
@@ -1918,13 +2309,17 @@ require_remote_capabilities() {
   local probe_dir
 
   for command_name in readlink flock find sort comm cut grep cat ln rm mv mkdir mktemp touch date; do
-    command -v "$command_name" >/dev/null 2>&1 || engine_die "$command_name is required"
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      engine_die "$command_name is required"
+    fi
   done
 
   # Later pruning depends on GNU find's timestamp output, and sticky/protected
   # discovery uses GNU-style predicates. Probing -printf is the cheap proxy for
   # GNU find as a whole.
-  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-preflight.XXXXXX")" || engine_die "mktemp is required"
+  if ! probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-preflight.XXXXXX")"; then
+    engine_die "mktemp is required"
+  fi
   if ! find "$probe_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >/dev/null 2>&1; then
     rm -rf -- "$probe_dir"
     engine_die "GNU find with -printf is required"
@@ -1953,31 +2348,52 @@ assert_public_symlinks_under_docroot() {
   local home_value="${HOME:-}"
   local links_tmp
 
-  docroot_real="$(cd "$docroot" && pwd -P)" || engine_die "docroot does not exist: $docroot"
+  if ! docroot_real="$(cd "$docroot" && pwd -P)"; then
+    engine_die "docroot does not exist: $docroot"
+  fi
 
   # Public symlinks must be usable by HTTP. On WP Cloud, $HOME exists in SSH
   # sessions but is not mounted for web requests, so any target outside docroot
   # is a broken deployment even if it works over SSH.
-  links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-links.XXXXXX")" || engine_die "mktemp is required"
-  find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null || true
+  if ! links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-links.XXXXXX")"; then
+    engine_die "mktemp is required"
+  fi
+  if ! find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null; then
+    :
+  fi
+  # find/read use NUL delimiters so symlink paths containing spaces or shell
+  # metacharacters are read exactly as filenames, not split like text.
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
 
     if [[ -n "$deployment_filter" ]]; then
-      if ! owner="$(deployment_owner_from_target "$target")" || [[ "$owner" != "$deployment_filter" ]]; then
+      if ! owner="$(deployment_owner_from_target "$target")"; then
+        continue
+      fi
+      if [[ "$owner" != "$deployment_filter" ]]; then
         continue
       fi
     fi
 
-    [[ "$target" != /* ]] || engine_die "public symlink target is absolute: ${link_path#"$docroot"/}"
-    if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
-      engine_die "public symlink target contains HOME: ${link_path#"$docroot"/}"
+    if [[ "$target" == /* ]]; then
+      # Remove the docroot prefix from the diagnostic so failures report the
+      # public claim path rather than the full filesystem path.
+      engine_die "public symlink target is absolute: ${link_path#"$docroot"/}"
+    fi
+    if [[ -n "$home_value" ]]; then
+      if [[ "$target" == *"$home_value"* ]]; then
+        engine_die "public symlink target contains HOME: ${link_path#"$docroot"/}"
+      fi
     fi
 
-    parent_real="$(cd "$(dirname "$link_path")" && pwd -P)" || engine_die "could not resolve public symlink parent: ${link_path#"$docroot"/}"
+    if ! parent_real="$(cd "$(dirname "$link_path")" && pwd -P)"; then
+      engine_die "could not resolve public symlink parent: ${link_path#"$docroot"/}"
+    fi
     target_dir="$(dirname "$target")"
     target_base="$(basename "$target")"
-    resolved_dir="$(cd "$parent_real/$target_dir" 2>/dev/null && pwd -P)" || engine_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
+    if ! resolved_dir="$(cd "$parent_real/$target_dir" 2>/dev/null && pwd -P)"; then
+      engine_die "public symlink resolves outside docroot: ${link_path#"$docroot"/}"
+    fi
     resolved="$resolved_dir/$target_base"
 
     case "$resolved" in
@@ -2001,21 +2417,33 @@ assert_claim_symlinks_under_docroot() {
   local resolved
   local home_value="${HOME:-}"
 
-  docroot_real="$(readlink -f "$docroot")" || engine_die "docroot does not exist: $docroot"
+  if ! docroot_real="$(readlink -f "$docroot")"; then
+    engine_die "docroot does not exist: $docroot"
+  fi
 
   while IFS= read -r claim || [[ -n "$claim" ]]; do
-    [[ -n "$claim" ]] || continue
+    if [[ -z "$claim" ]]; then
+      continue
+    fi
     public_path="$docroot/$claim"
 
-    [[ -L "$public_path" ]] || engine_die "public claim is not a symlink: $claim"
+    if [[ ! -L "$public_path" ]]; then
+      engine_die "public claim is not a symlink: $claim"
+    fi
     target="$(readlink "$public_path")"
 
-    [[ "$target" != /* ]] || engine_die "public symlink target is absolute: $claim"
-    if [[ -n "$home_value" && "$target" == *"$home_value"* ]]; then
-      engine_die "public symlink target contains HOME: $claim"
+    if [[ "$target" == /* ]]; then
+      engine_die "public symlink target is absolute: $claim"
+    fi
+    if [[ -n "$home_value" ]]; then
+      if [[ "$target" == *"$home_value"* ]]; then
+        engine_die "public symlink target contains HOME: $claim"
+      fi
     fi
 
-    resolved="$(readlink -f "$public_path")" || engine_die "public symlink resolves outside docroot: $claim"
+    if ! resolved="$(readlink -f "$public_path")"; then
+      engine_die "public symlink resolves outside docroot: $claim"
+    fi
     case "$resolved" in
       "$docroot_real"/*)
         ;;
@@ -2030,18 +2458,24 @@ create_scratch_dir() {
   local base="$1"
 
   cleanup_run_scratch
-  RUN_SCRATCH_DIR="$(mktemp -d "$base/.tmp.XXXXXX")" || engine_die "could not create scratch directory under $base"
+  if ! RUN_SCRATCH_DIR="$(mktemp -d "$base/.tmp.XXXXXX")"; then
+    engine_die "could not create scratch directory under $base"
+  fi
   printf '%s\n' "$RUN_SCRATCH_DIR"
 }
 
 sweep_stale_scratch_dirs() {
   local base="$1"
   local scratch_path
+  local scratch_list
 
-  { find "$base" -mindepth 1 -maxdepth 1 -type d -name '.tmp.*' -print0 2>/dev/null || true; } |
-  while IFS= read -r -d '' scratch_path; do
-    rm -rf -- "$scratch_path"
-  done
+  scratch_list="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-scratch.XXXXXX")"
+  if find "$base" -mindepth 1 -maxdepth 1 -type d -name '.tmp.*' -print0 >"$scratch_list" 2>/dev/null; then
+    while IFS= read -r -d '' scratch_path; do
+      rm -rf -- "$scratch_path"
+    done <"$scratch_list"
+  fi
+  rm -f -- "$scratch_list"
 }
 
 switch_current() {
@@ -2070,7 +2504,9 @@ acquire_lock() {
   # fd 9 is just a private lock handle. There is no explicit unlock: the kernel
   # releases the flock when this process exits and closes the descriptor.
   exec 9>"$lock_file"
-  flock -n -x 9 || engine_die "deployment already running"
+  if ! flock -n -x 9; then
+    engine_die "deployment already running"
+  fi
 }
 
 prune_releases() {
@@ -2081,32 +2517,47 @@ prune_releases() {
   local retained=0
   local release_path
   local release_name
+  local releases_list
 
   # Keep the active release plus the newest non-active releases. This preserves
   # rollback choices while avoiding deletion of the release currently serving.
-  { find "$releases_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' 2>/dev/null || true; } |
-  sort -rn |
-  while IFS=$'\t' read -r _ release_path; do
-    release_name="${release_path##*/}"
-    [[ "$release_name" == "$active_release" ]] && continue
+  releases_list="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-releases.XXXXXX")"
+  if find "$releases_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%p\n' >"$releases_list" 2>/dev/null; then
+    sort -rn "$releases_list" |
+    while IFS=$'\t' read -r _ release_path; do
+      # Release paths are sorted with a timestamp prefix; after reading the path,
+      # keep only its final component to compare against the active release id.
+      release_name="${release_path##*/}"
+      if [[ "$release_name" == "$active_release" ]]; then
+        continue
+      fi
 
-    if ((retained < keep_non_active)); then
-      retained=$((retained + 1))
-      continue
-    fi
+      if ((retained < keep_non_active)); then
+        retained=$((retained + 1))
+        continue
+      fi
 
-    rm -rf -- "$release_path"
-  done
+      rm -rf -- "$release_path"
+    done
+  fi
+  rm -f -- "$releases_list"
 }
 
 run_post_deploy() {
   local docroot="$1"
   local post_deploy_file="$2"
 
-  [[ -n "$post_deploy_file" ]] || return 0
-  [[ -f "$post_deploy_file" ]] || engine_die "post-deploy file does not exist: $post_deploy_file"
+  if [[ -z "$post_deploy_file" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$post_deploy_file" ]]; then
+    engine_die "post-deploy file does not exist: $post_deploy_file"
+  fi
 
-  (cd "$docroot" && bash -e "$post_deploy_file")
+  (
+    cd "$docroot"
+    bash -e "$post_deploy_file"
+  )
 }
 
 public_symlink_target() {
@@ -2118,10 +2569,13 @@ public_symlink_target() {
   # Build a relative target from the claim's parent directory. Example:
   # wp-content/plugins/foo -> ../../.wpcloud-site-git-deploy/.../current/wp-content/plugins/foo
   if [[ "$parent" == */* ]]; then
+    # Remove the claim's final path component so each remaining parent
+    # component contributes one ../ segment to the relative symlink target.
     parent="${parent%/*}"
     while [[ -n "$parent" ]]; do
       prefix="../$prefix"
       if [[ "$parent" == */* ]]; then
+        # Peel off one parent component at a time from the right.
         parent="${parent%/*}"
       else
         parent=""
@@ -2145,9 +2599,13 @@ reconcile_new_claims() {
   local tmp_link
 
   while IFS= read -r claim || [[ -n "$claim" ]]; do
-    [[ -n "$claim" ]] || continue
+    if [[ -z "$claim" ]]; then
+      continue
+    fi
 
     public_path="$docroot/$claim"
+    # Drop the filename portion to create the public parent directory, and use
+    # the final filename component when building the temporary symlink name.
     parent_dir="${public_path%/*}"
     target="$(public_symlink_target "$deployment_id" "$claim")"
     tmp_link="$parent_dir/.${public_path##*/}.$DOCROOT_NAMESPACE_SUFFIX.$$"
@@ -2159,9 +2617,11 @@ reconcile_new_claims() {
     rm -f -- "$tmp_link"
     ln -s "$target" "$tmp_link"
 
-    if [[ ! -e "$public_path" && ! -L "$public_path" ]]; then
-      mv -T -- "$tmp_link" "$public_path"
-      continue
+    if [[ ! -e "$public_path" ]]; then
+      if [[ ! -L "$public_path" ]]; then
+        mv -T -- "$tmp_link" "$public_path"
+        continue
+      fi
     fi
 
     # Existing public paths may contain real files/directories. Swap in the
@@ -2173,7 +2633,9 @@ reconcile_new_claims() {
         engine_die "mv --exchange failed to reclaim path: $claim"
       fi
     else
-      [[ -x "$exchange_helper" ]] || engine_die "exchange helper is required to reclaim existing path: $claim"
+      if [[ ! -x "$exchange_helper" ]]; then
+        engine_die "exchange helper is required to reclaim existing path: $claim"
+      fi
       if ! "$exchange_helper" "$tmp_link" "$public_path"; then
         rm -f -- "$tmp_link"
         engine_die "exchange helper failed to reclaim path: $claim"
@@ -2189,9 +2651,13 @@ cleanup_exchanged_paths() {
 
   # This file is durable on purpose. If cleanup failed after a prior atomic
   # exchange, the next deploy or rollback retries before changing claims again.
-  [[ -f "$exchanged_paths_file" ]] || return 0
+  if [[ ! -f "$exchanged_paths_file" ]]; then
+    return 0
+  fi
   while IFS= read -r path || [[ -n "$path" ]]; do
-    [[ -n "$path" ]] || continue
+    if [[ -z "$path" ]]; then
+      continue
+    fi
     rm -rf -- "$path"
   done <"$exchanged_paths_file"
 }
@@ -2214,6 +2680,8 @@ deployment_owner_from_target() {
   local target="$1"
 
   if [[ "$target" =~ (^|/)$DOCROOT_NAMESPACE_REGEX/deployments/([^/]+)/current($|/) ]]; then
+    # Capture group 2 is the deployment id embedded in deployment-owned public
+    # symlink targets.
     printf '%s\n' "${BASH_REMATCH[2]}"
     return 0
   fi
@@ -2228,11 +2696,15 @@ reject_foreign_deployment_claim() {
   local target
   local owner
 
-  [[ -L "$public_path" ]] || return 0
+  if [[ ! -L "$public_path" ]]; then
+    return 0
+  fi
 
   target="$(readlink "$public_path")"
-  if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-    engine_die "claim owned by another deployment: $claim"
+  if owner="$(deployment_owner_from_target "$target")"; then
+    if [[ "$owner" != "$deployment_id" ]]; then
+      engine_die "claim owned by another deployment: $claim"
+    fi
   fi
 }
 
@@ -2249,14 +2721,18 @@ reject_foreign_deployment_ancestor_claim() {
   # Layered deployments are allowed only when their public paths do not overlap.
   # A foreign ancestor symlink would route this claim into another deployment.
   while [[ "$remainder" == */* ]]; do
+    # Walk from left to right through the claim: take the next component before
+    # the slash, then leave the unvisited suffix in remainder.
     component="${remainder%%/*}"
     remainder="${remainder#*/}"
     ancestor="$ancestor/$component"
 
     if [[ -L "$ancestor" ]]; then
       target="$(readlink "$ancestor")"
-      if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-        engine_die "claim owned by another deployment: $claim"
+      if owner="$(deployment_owner_from_target "$target")"; then
+        if [[ "$owner" != "$deployment_id" ]]; then
+          engine_die "claim owned by another deployment: $claim"
+        fi
       fi
     fi
   done
@@ -2271,16 +2747,28 @@ reject_foreign_deployment_descendant_claim() {
   local owner
   local links_tmp
 
-  [[ -d "$public_path" && ! -L "$public_path" ]] || return 0
+  if [[ ! -d "$public_path" ]]; then
+    return 0
+  fi
+  if [[ -L "$public_path" ]]; then
+    return 0
+  fi
 
   # Reclaiming a real directory is destructive to that exact path. Refuse when
   # it contains another deployment's symlink so layers cannot engulf each other.
-  links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-descendants.XXXXXX")" || engine_die "mktemp is required"
-  find "$public_path" -mindepth 1 -type l -print0 >"$links_tmp" 2>/dev/null || true
+  if ! links_tmp="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-descendants.XXXXXX")"; then
+    engine_die "mktemp is required"
+  fi
+  if ! find "$public_path" -mindepth 1 -type l -print0 >"$links_tmp" 2>/dev/null; then
+    :
+  fi
+  # NUL-delimited find output keeps arbitrary symlink paths intact.
   while IFS= read -r -d '' link_path; do
     target="$(readlink "$link_path")"
-    if owner="$(deployment_owner_from_target "$target")" && [[ "$owner" != "$deployment_id" ]]; then
-      engine_die "claim contains another deployment: $claim"
+    if owner="$(deployment_owner_from_target "$target")"; then
+      if [[ "$owner" != "$deployment_id" ]]; then
+        engine_die "claim contains another deployment: $claim"
+      fi
     fi
   done <"$links_tmp"
   rm -f -- "$links_tmp"
@@ -2294,7 +2782,9 @@ remove_exact_claim_symlink() {
   local target
   local expected_target
 
-  [[ -L "$public_path" ]] || return 0
+  if [[ ! -L "$public_path" ]]; then
+    return 0
+  fi
 
   target="$(readlink "$public_path")"
   expected_target="$(public_symlink_target "$deployment_id" "$claim")"
@@ -2310,7 +2800,9 @@ cleanup_removed_claims() {
   local claim
 
   while IFS= read -r claim || [[ -n "$claim" ]]; do
-    [[ -n "$claim" ]] || continue
+    if [[ -z "$claim" ]]; then
+      continue
+    fi
     remove_exact_claim_symlink "$docroot" "$deployment_id" "$claim"
   done <"$removed_claims_file"
 }
@@ -2324,12 +2816,24 @@ cleanup_overlapping_removed_claims() {
   local new_claim
 
   while IFS= read -r removed_claim || [[ -n "$removed_claim" ]]; do
-    [[ -n "$removed_claim" ]] || continue
+    if [[ -z "$removed_claim" ]]; then
+      continue
+    fi
 
     while IFS= read -r new_claim || [[ -n "$new_claim" ]]; do
-      [[ -n "$new_claim" ]] || continue
+      if [[ -z "$new_claim" ]]; then
+        continue
+      fi
 
-      if [[ "$removed_claim" == "$new_claim" || "$removed_claim" == "$new_claim/"* || "$new_claim" == "$removed_claim/"* ]]; then
+      if [[ "$removed_claim" == "$new_claim" ]]; then
+        remove_exact_claim_symlink "$docroot" "$deployment_id" "$removed_claim"
+        break
+      fi
+      if [[ "$removed_claim" == "$new_claim/"* ]]; then
+        remove_exact_claim_symlink "$docroot" "$deployment_id" "$removed_claim"
+        break
+      fi
+      if [[ "$new_claim" == "$removed_claim/"* ]]; then
         remove_exact_claim_symlink "$docroot" "$deployment_id" "$removed_claim"
         break
       fi
@@ -2351,9 +2855,15 @@ discover_materialized_public_claims() {
   rm -f -- "$claims_tmp" "$links_tmp"
   : >"$claims_tmp"
 
-  find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null || true
+  if ! find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null; then
+    :
+  fi
   # shellcheck disable=SC2094
+  # NUL-delimited reads preserve symlink paths exactly while this loop writes
+  # only claims that still match this deployment's expected symlink target.
   while IFS= read -r -d '' link_path; do
+    # Remove the absolute docroot prefix to turn the symlink path into a public
+    # claim path relative to the web root.
     claim="${link_path#"$docroot"/}"
 
     if [[ "$claim" == *$'\n'* ]]; then
@@ -2385,6 +2895,8 @@ combine_claims() {
 normalize_public_path() {
   local value="$1"
 
+  # Remove a leading ./ and then remove all trailing slashes so equivalent
+  # public paths compare as the same claim.
   value="${value#./}"
   while [[ "$value" == */ ]]; do
     value="${value%/}"
@@ -2427,21 +2939,27 @@ discover_docroot_paths() {
   local normalized
 
   if [[ -n "$override_file" ]]; then
-    [[ -f "$override_file" ]] || engine_die "$label override file does not exist: $override_file"
+    if [[ ! -f "$override_file" ]]; then
+      engine_die "$label override file does not exist: $override_file"
+    fi
     while IFS= read -r path || [[ -n "$path" ]]; do
       normalized="$(normalize_public_path "$path")"
       printf '%s\n' "$normalized"
     done <"$override_file"
   else
-    { find "$docroot" "$@" 2>/dev/null || true; } |
-    while IFS= read -r path; do
-      if [[ "$path" == "$docroot" ]]; then
-        normalized=""
-      else
-        normalized="$(normalize_public_path "${path#"$docroot"/}")"
-      fi
-      printf '%s\n' "$normalized"
-    done
+    if find "$docroot" "$@" 2>/dev/null; then
+      :
+    fi |
+      while IFS= read -r path; do
+        if [[ "$path" == "$docroot" ]]; then
+          normalized=""
+        else
+          # Convert an absolute docroot path discovered by find into the public
+          # path relative to the docroot.
+          normalized="$(normalize_public_path "${path#"$docroot"/}")"
+        fi
+        printf '%s\n' "$normalized"
+      done
   fi | sort -u >"$output_file"
 }
 
@@ -2487,6 +3005,9 @@ validate_claims_not_protected() {
   if [[ -s "$blocked_anchors_file" ]]; then
     blocked_claim="$(
       while IFS= read -r pair || [[ -n "$pair" ]]; do
+        # ancestor_pairs_file stores "ancestor<TAB>claim". The prefix before
+        # the tab is the key checked against blocked anchors; the suffix after
+        # the first tab is the claim reported to the operator.
         if grep -Fxq -- "${pair%%$'\t'*}" "$blocked_anchors_file"; then
           printf '%s\n' "${pair#*$'\t'}"
           break
@@ -2506,9 +3027,12 @@ expand_ancestor_pairs() {
     ancestor="$claim"
     while true; do
       printf '%s\t%s\n' "$ancestor" "$claim"
-      [[ -z "$ancestor" ]] && break
+      if [[ -z "$ancestor" ]]; then
+        break
+      fi
 
       if [[ "$ancestor" == */* ]]; then
+        # Move one level upward by dropping the final path component.
         ancestor="${ancestor%/*}"
       else
         ancestor=""
@@ -2533,18 +3057,23 @@ claim_for_path() {
       continue
     fi
 
-    if [[ "$public_path" == "$boundary/"* && ${#boundary} -gt ${#best_boundary} ]]; then
-      best_boundary="$boundary"
+    if [[ "$public_path" == "$boundary/"* ]]; then
+      if ((${#boundary} > ${#best_boundary})); then
+        best_boundary="$boundary"
+      fi
     fi
   done <"$boundaries_file"
 
   if [[ -n "$best_boundary" ]]; then
+    # Remove the sticky boundary prefix, then keep only the next path component
+    # inside that boundary as the deploy claim.
     remainder="${public_path#"$best_boundary"/}"
     next_segment="${remainder%%/*}"
     printf '%s/%s\n' "$best_boundary" "$next_segment"
     return
   fi
 
+  # Outside a sticky boundary, the top-level path component is the claim.
   printf '%s\n' "${public_path%%/*}"
 }
 
@@ -2553,7 +3082,11 @@ rejected_shared_path_for_public_path() {
   local shared_path
 
   for shared_path in "${REJECTED_SHARED_PATHS[@]}"; do
-    if [[ "$public_path" == "$shared_path" || "$public_path" == "$shared_path/"* ]]; then
+    if [[ "$public_path" == "$shared_path" ]]; then
+      printf '%s\n' "$shared_path"
+      return 0
+    fi
+    if [[ "$public_path" == "$shared_path/"* ]]; then
       printf '%s\n' "$shared_path"
       return 0
     fi
@@ -2566,7 +3099,11 @@ shared_container_for_public_path() {
   local shared_path
 
   for shared_path in "${SHARED_CONTAINER_PATHS[@]}"; do
-    if [[ "$public_path" == "$shared_path" || "$public_path" == "$shared_path/"* ]]; then
+    if [[ "$public_path" == "$shared_path" ]]; then
+      printf '%s\n' "$shared_path"
+      return 0
+    fi
+    if [[ "$public_path" == "$shared_path/"* ]]; then
       printf '%s\n' "$shared_path"
       return 0
     fi
@@ -2594,7 +3131,11 @@ compute_claims() {
 
   find "$release_tree" \( -type f -or -type l \) -print0 >"$find_tmp"
   # shellcheck disable=SC2094
+  # find emits NUL-delimited paths so spaces and shell metacharacters inside
+  # repository filenames do not alter claim computation.
   while IFS= read -r -d '' release_file; do
+    # Convert the absolute release-tree path into the public docroot-relative
+    # path that will be claimed.
     public_path="${release_file#"$release_tree"/}"
 
     if [[ "$public_path" == *$'\n'* ]]; then
@@ -2613,18 +3154,24 @@ compute_claims() {
         continue
         ;;
     esac
-    if [[ "$reject_shared_paths" == "1" ]] && shared_path="$(rejected_shared_path_for_public_path "$public_path")"; then
-      rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
-      engine_die "shared path cannot be deployed: $shared_path"
-    fi
-    if shared_path="$(shared_container_for_public_path "$public_path")"; then
-      if [[ "$reject_shared_paths" == "1" && "$public_path" == "$shared_path" ]]; then
+    if [[ "$reject_shared_paths" == "1" ]]; then
+      if shared_path="$(rejected_shared_path_for_public_path "$public_path")"; then
         rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
         engine_die "shared path cannot be deployed: $shared_path"
       fi
-      if [[ "$reject_shared_paths" == "1" && -L "$release_file" ]]; then
-        rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
-        engine_die "shared container symlink cannot be deployed: $public_path"
+    fi
+    if shared_path="$(shared_container_for_public_path "$public_path")"; then
+      if [[ "$reject_shared_paths" == "1" ]]; then
+        if [[ "$public_path" == "$shared_path" ]]; then
+          rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
+          engine_die "shared path cannot be deployed: $shared_path"
+        fi
+      fi
+      if [[ "$reject_shared_paths" == "1" ]]; then
+        if [[ -L "$release_file" ]]; then
+          rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
+          engine_die "shared container symlink cannot be deployed: $public_path"
+        fi
       fi
       printf '%s\n' "$public_path"
       continue
@@ -2693,7 +3240,9 @@ apply_claim_transition() {
   cleanup_overlapping_removed_claims "$docroot" "$deployment_id" "$removed_claims_file" "$new_claims_file"
   reconcile_new_claims "$docroot" "$deployment_id" "$new_claims_file" "$exchange_helper" "$exchanged_paths_file"
   switch_current "$base" "$release_id"
-  [[ "$(readlink "$(current_path_for "$base")")" == "$(current_target_for "$release_id")" ]] || engine_die "current does not point to releases/$release_id"
+  if [[ "$(readlink "$(current_path_for "$base")")" != "$(current_target_for "$release_id")" ]]; then
+    engine_die "current does not point to releases/$release_id"
+  fi
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   # Non-overlapping removed claims are cleaned only after current points at the
@@ -2728,7 +3277,9 @@ rollback_release() {
   acquire_lock "$lock_file"
 
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
-  [[ -d "$release_dir" ]] || engine_die "rollback release does not exist: $release_dir"
+  if [[ ! -d "$release_dir" ]]; then
+    engine_die "rollback release does not exist: $release_dir"
+  fi
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
@@ -2751,18 +3302,28 @@ validate_engine_arg_combination() {
   local print_claims="$5"
 
   if [[ -n "$rollback_to" ]]; then
-    [[ -z "$release_id" ]] || engine_die "--release-id cannot be used with --rollback-to"
-    if [[ -n "$keep_releases" ]]; then
-      is_positive_int "$keep_releases" || engine_die "keep-releases must be a positive integer"
+    if [[ -n "$release_id" ]]; then
+      engine_die "--release-id cannot be used with --rollback-to"
     fi
-    [[ -z "$post_deploy_file" ]] || engine_die "--post-deploy-file cannot be used with --rollback-to"
-    ((print_claims == 0)) || engine_die "--print-claims cannot be used with --rollback-to"
+    if [[ -n "$keep_releases" ]]; then
+      if ! is_positive_int "$keep_releases"; then
+        engine_die "keep-releases must be a positive integer"
+      fi
+    fi
+    if [[ -n "$post_deploy_file" ]]; then
+      engine_die "--post-deploy-file cannot be used with --rollback-to"
+    fi
+    if ((print_claims != 0)); then
+      engine_die "--print-claims cannot be used with --rollback-to"
+    fi
     engine_require_id "rollback-to" "$rollback_to"
     return 0
   fi
 
   engine_require_id "release-id" "$release_id"
-  is_positive_int "$keep_releases" || engine_die "keep-releases must be a positive integer"
+  if ! is_positive_int "$keep_releases"; then
+    engine_die "keep-releases must be a positive integer"
+  fi
 }
 
 print_release_claims() {
@@ -2790,7 +3351,9 @@ print_release_claims() {
   mkdir -p "$incoming_dir" "$releases_dir"
   acquire_lock "$lock_file"
 
-  [[ -d "$incoming_release" ]] || engine_die "incoming release does not exist: $incoming_release"
+  if [[ ! -d "$incoming_release" ]]; then
+    engine_die "incoming release does not exist: $incoming_release"
+  fi
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
@@ -2832,14 +3395,18 @@ promote_incoming_release() {
   mkdir -p "$incoming_dir" "$releases_dir"
   acquire_lock "$lock_file"
 
-  [[ -d "$incoming_release" ]] || engine_die "incoming release does not exist: $incoming_release"
+  if [[ ! -d "$incoming_release" ]]; then
+    engine_die "incoming release does not exist: $incoming_release"
+  fi
   cleanup_exchanged_paths "$exchanged_paths_file"
   rm -f -- "$exchanged_paths_file"
   sweep_stale_scratch_dirs "$base"
   cleanup_owned_maintenance_file "$docroot" "$deployment_id" "$maintenance_file"
 
   scratch_dir="$(create_scratch_dir "$base")"
-  [[ ! -e "$release_dir" ]] || engine_die "release already exists: $release_dir"
+  if [[ -e "$release_dir" ]]; then
+    engine_die "release already exists: $release_dir"
+  fi
 
   create_maintenance_file "$docroot" "$deployment_id" "$release_id" "$maintenance_file"
   prepare_claim_transition "$docroot" "$deployment_id" "$base" "$incoming_release" "$scratch_dir"
@@ -2879,11 +3446,21 @@ cmd_remote_deploy() {
   # subshell after rsyncing incoming content so engine exits cannot bypass the
   # outer cleanup paths.
   args_begin_with_die engine_die argument "$@"
-  arg_has --help && show_help=1
-  arg_has -h && show_help_short=1
-  arg_has --version && show_version=1
-  arg_has --print-claims && print_claims=1
-  arg_has --assert-public-symlinks && assert_public_symlinks=1
+  if arg_has --help; then
+    show_help=1
+  fi
+  if arg_has -h; then
+    show_help_short=1
+  fi
+  if arg_has --version; then
+    show_version=1
+  fi
+  if arg_has --print-claims; then
+    print_claims=1
+  fi
+  if arg_has --assert-public-symlinks; then
+    assert_public_symlinks=1
+  fi
   arg_set docroot --docroot
   arg_set deployment_id --deployment-id
   arg_set release_id --release-id
@@ -2892,7 +3469,11 @@ cmd_remote_deploy() {
   arg_set post_deploy_file --post-deploy-file
   arg_set maintenance_file --maintenance-file
   arg_set exchange_helper --exchange-helper
-  if ((show_help || show_help_short)); then
+  if ((show_help)); then
+    engine_usage
+    exit 0
+  fi
+  if ((show_help_short)); then
     engine_usage
     exit 0
   fi
@@ -2911,7 +3492,9 @@ cmd_remote_deploy() {
   maintenance_file="$(trim "$maintenance_file")"
   exchange_helper="$(trim "$exchange_helper")"
 
-  [[ -n "$docroot" ]] || engine_die "docroot is required"
+  if [[ -z "$docroot" ]]; then
+    engine_die "docroot is required"
+  fi
   require_maintenance_file "$maintenance_file" engine_die
 
   if ((assert_public_symlinks)); then
@@ -2959,7 +3542,9 @@ cmd_remote_deploy() {
 
 main() {
   local command="${1:-}"
-  shift || true
+  if (($# > 0)); then
+    shift
+  fi
 
   case "$command" in
     init)
