@@ -135,4 +135,5 @@ Go CLI.
 
 The supported user-facing behavior is documented by this README. The core
 correctness contract lives in `docs/invariants.md`, and test coverage is mapped
-in `docs/testing-matrix.md`.
+in `docs/testing-matrix.md`. Maintainer-oriented command and deploy flow
+diagrams live in `docs/code-flow.md`.
