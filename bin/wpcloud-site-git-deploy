@@ -270,7 +270,6 @@ arg_set() {
   local parsed_count
 
   arg_read_value_count "$dest" parsed_count "$key" "$validator"
-  : "$parsed_count"
 }
 
 # Reads exactly one deploy ref selector, such as --branch, --tag, or --commit,
@@ -808,7 +807,7 @@ prepare_git_features() {
   # objects before copying into the docroot release tree.
   git -C "$worktree" ls-files -z >"$files_list"
   git -C "$worktree" check-attr filter --stdin -z <"$files_list" >"$attrs_list"
-  : >"$lfs_paths_list"
+  printf '%s' '' >"$lfs_paths_list"
   # git check-attr -z returns triples of NUL-delimited fields:
   # path, attribute name, and attribute value. Read each field separately so the
   # loop describes that record shape instead of hiding it in a compact condition.
@@ -841,7 +840,7 @@ prepare_git_features() {
       cd "$worktree"
       git_lfs_with_auth pull
     ) >&2
-    : >"$lfs_pointer_paths"
+    printf '%s' '' >"$lfs_pointer_paths"
     # lfs_paths_list is NUL-delimited because Git paths may contain whitespace.
     while IFS= read -r -d '' path; do
       if grep -Il '^version https://git-lfs.github.com/spec/v1$' -- "$worktree/$path" >/dev/null 2>&1; then
@@ -965,9 +964,7 @@ create_worktree() {
     cleanup_worktree_path "$repo_dir" "$worktree"
     # Repeat the same :? protected path removal after failed feature prep.
     rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
-    if ! rmdir "$TMP_DIR/$name" 2>/dev/null; then
-      :
-    fi
+    remove_empty_directory_if_possible "$TMP_DIR/$name"
     return 1
   fi
   printf '%s\n' "$worktree"
@@ -983,9 +980,7 @@ cleanup_worktree() {
   cleanup_worktree_path "$repo_dir" "$worktree"
   # Keep the destructive cleanup tied to required path components.
   rm -rf "${TMP_DIR:?}/${name:?}/${release_id:?}"
-  if ! rmdir "$TMP_DIR/$name" 2>/dev/null; then
-    :
-  fi
+  remove_empty_directory_if_possible "$TMP_DIR/$name"
 }
 
 cleanup_worktree_path() {
@@ -996,6 +991,15 @@ cleanup_worktree_path() {
     rm -rf "$worktree"
   fi
   git -C "$repo_dir" worktree prune
+}
+
+remove_empty_directory_if_possible() {
+  local directory="$1"
+
+  if rmdir "$directory" 2>/dev/null; then
+    return 0
+  fi
+  return 0
 }
 
 copy_worktree_to_incoming() {
@@ -1232,7 +1236,7 @@ select_rollback_release() {
   # promotion completes, so default rollback should prefer metadata-backed
   # releases instead of blindly picking the newest directory.
   base="$(docroot_deployment_base "$docroot" "$deployment_id")"
-  : >"$metadata_candidates"
+  printf '%s' '' >"$metadata_candidates"
   find "$(metadata_dir_for "$base")" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
     while IFS= read -r metadata_dir; do
       # Keep only the final path component from the metadata directory path;
@@ -2191,10 +2195,11 @@ RUN_SCRATCH_DIR=""
 
 cleanup_run_scratch() {
   if [[ -n "$RUN_SCRATCH_DIR" ]]; then
-    if ! rm -rf -- "$RUN_SCRATCH_DIR" 2>/dev/null; then
-      :
+    if rm -rf -- "$RUN_SCRATCH_DIR" 2>/dev/null; then
+      return 0
     fi
   fi
+  return 0
 }
 
 maintenance_file_is_tool_owned() {
@@ -2325,7 +2330,7 @@ require_remote_capabilities() {
     engine_die "GNU find with -printf is required"
   fi
 
-  : >"$probe_dir/source"
+  printf '%s' '' >"$probe_dir/source"
   if ! mv -T "$probe_dir/source" "$probe_dir/dest" 2>/dev/null; then
     rm -rf -- "$probe_dir"
     engine_die "atomic replacement requires mv -T"
@@ -2359,7 +2364,7 @@ assert_public_symlinks_under_docroot() {
     engine_die "mktemp is required"
   fi
   if ! find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null; then
-    :
+    printf '%s' '' >"$links_tmp"
   fi
   # find/read use NUL delimiters so symlink paths containing spaces or shell
   # metacharacters are read exactly as filenames, not split like text.
@@ -2760,7 +2765,7 @@ reject_foreign_deployment_descendant_claim() {
     engine_die "mktemp is required"
   fi
   if ! find "$public_path" -mindepth 1 -type l -print0 >"$links_tmp" 2>/dev/null; then
-    :
+    printf '%s' '' >"$links_tmp"
   fi
   # NUL-delimited find output keeps arbitrary symlink paths intact.
   while IFS= read -r -d '' link_path; do
@@ -2853,10 +2858,10 @@ discover_materialized_public_claims() {
   local expected_target
 
   rm -f -- "$claims_tmp" "$links_tmp"
-  : >"$claims_tmp"
+  printf '%s' '' >"$claims_tmp"
 
   if ! find "$docroot" -path "$docroot/$DOCROOT_NAMESPACE" -prune -o -type l -print0 >"$links_tmp" 2>/dev/null; then
-    :
+    printf '%s' '' >"$links_tmp"
   fi
   # shellcheck disable=SC2094
   # NUL-delimited reads preserve symlink paths exactly while this loop writes
@@ -2937,6 +2942,7 @@ discover_docroot_paths() {
   shift 4
   local path
   local normalized
+  local discovered_paths_file
 
   if [[ -n "$override_file" ]]; then
     if [[ ! -f "$override_file" ]]; then
@@ -2947,19 +2953,21 @@ discover_docroot_paths() {
       printf '%s\n' "$normalized"
     done <"$override_file"
   else
-    if find "$docroot" "$@" 2>/dev/null; then
-      :
-    fi |
-      while IFS= read -r path; do
-        if [[ "$path" == "$docroot" ]]; then
-          normalized=""
-        else
-          # Convert an absolute docroot path discovered by find into the public
-          # path relative to the docroot.
-          normalized="$(normalize_public_path "${path#"$docroot"/}")"
-        fi
-        printf '%s\n' "$normalized"
-      done
+    discovered_paths_file="$(mktemp "${TMPDIR:-/tmp}/wpcloud-site-git-deploy-docroot-paths.XXXXXX")"
+    if ! find "$docroot" "$@" >"$discovered_paths_file" 2>/dev/null; then
+      printf '%s' '' >"$discovered_paths_file"
+    fi
+    while IFS= read -r path; do
+      if [[ "$path" == "$docroot" ]]; then
+        normalized=""
+      else
+        # Convert an absolute docroot path discovered by find into the public
+        # path relative to the docroot.
+        normalized="$(normalize_public_path "${path#"$docroot"/}")"
+      fi
+      printf '%s\n' "$normalized"
+    done <"$discovered_paths_file"
+    rm -f -- "$discovered_paths_file"
   fi | sort -u >"$output_file"
 }
 
@@ -3125,7 +3133,7 @@ compute_claims() {
 
   rm -f -- "$claims_tmp" "$sorted_tmp" "$find_tmp"
   if [[ ! -d "$release_tree" ]]; then
-    : >"$output_file"
+    printf '%s' '' >"$output_file"
     return 0
   fi
 
@@ -3207,7 +3215,7 @@ prepare_claim_transition() {
     current_target="$(readlink "$(current_path_for "$base")")"
     compute_claims "$base/$current_target" "$boundaries_file" "$old_release_claims_file"
   else
-    : >"$old_release_claims_file"
+    printf '%s' '' >"$old_release_claims_file"
   fi
 
   # The previous release tree is not the whole truth: public symlinks may have
@@ -3233,7 +3241,7 @@ apply_claim_transition() {
 
   exchanged_paths_file="$(exchanged_paths_file_for "$base")"
 
-  : >"$exchanged_paths_file"
+  printf '%s' '' >"$exchanged_paths_file"
   # Parent/child claim granularity can change between releases. Remove exact
   # overlapping old symlinks before creating new claims so they cannot block
   # parent/child directory creation.

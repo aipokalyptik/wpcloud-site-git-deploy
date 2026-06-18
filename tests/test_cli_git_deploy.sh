@@ -184,6 +184,13 @@ awk '
   END { exit found ? 1 : 0 }
 ' "$cli" || fail "conditionals should use readable if blocks instead of terse &&/|| chains"
 awk '
+  /^[[:space:]]*:[[:space:]]*($|>|["'$"'"'])/ {
+    printf "less-readable colon builtin at line %d: %s\n", FNR, $0 >"/dev/stderr"
+    found=1
+  }
+  END { exit found ? 1 : 0 }
+' "$cli" || fail "use readable shell commands instead of the ':' builtin"
+awk '
   /^# Runtime, Git, And Repository Helpers/ { in_runtime=1 }
   /^# Deploy Orchestration And Release Metadata/ { exit seen_repo_dir ? 0 : 1 }
   in_runtime && /^repo_dir_for\(\) \{/ { seen_repo_dir=1 }
