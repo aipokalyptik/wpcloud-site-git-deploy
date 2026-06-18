@@ -4,7 +4,7 @@
 
 **Goal:** Bring Go local tests and Go live E2E coverage to parity or better than the preserved Bash oracle, then remove the old Bash implementation, Bash tests, and Bash-era docs from the repo.
 
-**Architecture:** Treat `spec/tests/*.sh` as the coverage checklist, not as code to keep. Move each meaningful Bash oracle behavior into focused Go unit/integration tests, Go CLI black-box tests, or the Go live E2E matrix. Delete `spec/` only after a checked-in parity matrix shows every Bash scenario is either covered by Go, intentionally obsolete because of the redesigned CLI/state model, or covered by live E2E.
+**Architecture:** Treat `spec/tests/*.sh` as the coverage checklist, not as code to keep. The preserved Bash reference suite is not Go parity evidence because it runs `spec/bin/wpcloud-site-git-deploy` against itself. Move each meaningful Bash oracle behavior into focused Go unit/integration tests, a Go-binary conformance harness, or the Go live E2E matrix. Delete `spec/` only after a checked-in parity matrix shows every Bash scenario is either covered by Go, intentionally obsolete because of the redesigned CLI/state model, or covered by live E2E.
 
 **Tech Stack:** Go `testing`, stdlib filesystem/git fixtures, existing package layout under `internal/`, shell only for `scripts/live-e2e.sh` and `Makefile` wrappers, external commands `git`, `git-lfs`, `ssh-keygen`, `rsync`, and WP Cloud live E2E.
 
@@ -14,6 +14,8 @@
 
 - Create: `docs/testing-matrix.md`
   - Human-readable coverage matrix mapping every Bash oracle behavior to Go local test, Go live E2E test, or intentional obsolete behavior.
+- Create: `tests/go_conformance.sh`
+  - Black-box conformance harness that builds/runs the Go binary and ports the old Bash CLI/auth/remote invariant scenarios to the Go CLI/state model. This script must never call `spec/bin/wpcloud-site-git-deploy`.
 - Create: `internal/testutil/files.go`
   - Shared helpers for temp homes, docroots, file writes, symlink reads, assertions, path checks, and command output checks.
 - Create: `internal/testutil/git.go`
@@ -41,7 +43,9 @@
 - Modify: `tests/test_live_e2e_static.sh`
   - Keep/extend static guardrails for live E2E behavior that is easy to regress.
 - Modify: `Makefile`
-  - Add `make test-local`, `make test-live`, and remove any dependency on `spec-test` once `spec/` is deleted.
+  - Add `make conformance`, include it in `make check`, and remove any dependency on `spec-test` once `spec/` is deleted.
+- Modify: `.github/workflows/ci.yml`
+  - Replace any parity-sounding Bash oracle step with Go conformance checks. The preserved Bash reference may run as a reference integrity check while `spec/` exists, but it must be labeled non-parity.
 - Modify: `README.md`
   - Replace “Bash oracle” language with “Go test suite and live E2E matrix” after parity lands.
 - Delete at the end only: `spec/`
@@ -71,6 +75,17 @@ The Bash suite currently protects these behavior groups:
 18. Promotion invariants: relative symlinks, atomic exchange, cached exchange capability, exact foreign takeover, foreign ancestor/descendant rejection.
 19. Shared WordPress path policy: cache/upgrade/maintenance rejected, uploads/blogs.dir leaf regular files allowed, shared container root claims rejected, shared container symlinks rejected, parent directories left behind.
 20. Live WP Cloud coverage: install, deploy, no-op/force, deploy root, post-deploy/maintenance, shared paths, refs, foreign takeover, LFS hydration, submodules, auth, doctor, rollback, inspection.
+
+Critical review gates before `spec/` deletion:
+
+- Protected-anchor and sticky-boundary discovery must preserve Bash semantics:
+  root-owned or root-group-owned candidates only, and protected anchors are
+  based on effective writability by the site user rather than raw mode bits.
+- CI must not present `spec/tests/run.sh` as Go parity evidence. It may run the
+  Bash reference against itself only as a temporary reference-integrity check.
+- At least one checked-in conformance harness must execute the built Go binary
+  through black-box CLI flows covering the former Bash CLI/auth/remote invariant
+  suites.
 
 ## Task 1: Add The Parity Matrix
 
@@ -297,7 +312,123 @@ git add internal/testutil
 git commit -m "Add shared Go test utilities"
 ```
 
-## Task 3: Parser And CLI Surface Parity
+## Task 3: Add Go-Binary Conformance Harness
+
+**Files:**
+- Create: `tests/go_conformance.sh`
+- Modify: `Makefile`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `docs/testing-matrix.md`
+
+- [ ] **Step 1: Create the Go conformance harness skeleton**
+
+Create `tests/go_conformance.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+binary="${WPCLOUD_SITE_GIT_DEPLOY_BINARY:-$repo_root/dist/wpcloud-site-git-deploy-linux-amd64}"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+assert_contains() {
+  local needle="$1"
+  local file="$2"
+  grep -Fq -- "$needle" "$file" || fail "expected $file to contain: $needle"
+}
+
+assert_not_contains() {
+  local needle="$1"
+  local file="$2"
+  if grep -Fq -- "$needle" "$file"; then
+    fail "expected $file not to contain: $needle"
+  fi
+}
+
+if [[ ! -x "$binary" ]]; then
+  mkdir -p "$(dirname "$binary")"
+  GOCACHE="${GOCACHE:-$repo_root/.cache/go-build}" \
+  GOMODCACHE="${GOMODCACHE:-$repo_root/.cache/go-mod}" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -o "$binary" ./cmd/wpcloud-site-git-deploy
+fi
+
+"$binary" --help >"$tmpdir/help.txt"
+assert_contains "wpcloud-site-git-deploy" "$tmpdir/help.txt"
+
+printf 'go conformance harness: skeleton passed\n'
+```
+
+- [ ] **Step 2: Wire the harness into Makefile**
+
+Add:
+
+```make
+.PHONY: conformance
+
+conformance: build
+	tests/go_conformance.sh
+```
+
+Update:
+
+```make
+check: test vet syntax shellcheck conformance
+	bash tests/test_live_e2e_static.sh
+	git diff --check
+```
+
+Add help text:
+
+```make
+	@printf '%s\n' '  make conformance Run black-box Go binary conformance tests'
+```
+
+- [ ] **Step 3: Repoint CI wording**
+
+Modify `.github/workflows/ci.yml` so it runs:
+
+```yaml
+      - name: Run Go conformance harness
+        run: make conformance
+      - name: Run preserved Bash reference suite
+        run: spec/tests/run.sh
+```
+
+Do not call the second step an oracle or parity check.
+
+- [ ] **Step 4: Update the matrix**
+
+Add a row:
+
+```markdown
+| Go conformance harness | Built Go binary is exercised by black-box tests independent of `spec/bin` | go-local | `tests/go_conformance.sh`; `make conformance` |
+```
+
+- [ ] **Step 5: Run tests**
+
+```bash
+make conformance
+make check
+```
+
+Expected: pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/go_conformance.sh Makefile .github/workflows/ci.yml docs/testing-matrix.md
+git commit -m "Add Go binary conformance harness"
+```
+
+## Task 4: Parser And CLI Surface Parity
 
 **Files:**
 - Modify: `internal/cli/parser_test.go`
@@ -379,7 +510,7 @@ git add internal/cli/parser_test.go docs/testing-matrix.md
 git commit -m "Cover Go CLI parser parity"
 ```
 
-## Task 4: Auth And Doctor Parity
+## Task 5: Auth And Doctor Parity
 
 **Files:**
 - Modify: `internal/auth/auth_test.go`
@@ -475,7 +606,7 @@ git add internal/auth/auth_test.go internal/doctor/doctor_test.go internal/cli/r
 git commit -m "Cover auth and doctor parity"
 ```
 
-## Task 5: Deploy Integration Parity
+## Task 6: Deploy Integration Parity
 
 **Files:**
 - Modify: `internal/engine/deploy_test.go`
@@ -550,7 +681,7 @@ git add internal/engine/deploy_test.go internal/cli/run_test.go docs/testing-mat
 git commit -m "Cover deploy integration parity"
 ```
 
-## Task 6: LFS And Submodule Parity
+## Task 7: LFS And Submodule Parity
 
 **Files:**
 - Modify: `internal/engine/deploy_test.go`
@@ -616,7 +747,7 @@ git add internal/engine/deploy_test.go scripts/live-e2e.sh docs/testing-matrix.m
 git commit -m "Cover LFS and submodule parity"
 ```
 
-## Task 7: Promotion, Claims, Symlink, And Shared-Path Parity
+## Task 8: Promotion, Claims, Symlink, And Shared-Path Parity
 
 **Files:**
 - Modify: `internal/claims/claims_test.go`
@@ -649,6 +780,11 @@ Add tests for:
 
 Add tests for:
 
+- discovered sticky boundary requires uid 0 or gid 0 ownership;
+- discovered protected anchor requires uid 0 or gid 0 ownership;
+- protected anchor predicate uses effective writability, so a root-owned `0644`
+  file that the site user cannot write is protected even though owner-write mode
+  is set;
 - atomic reclaim of existing file, directory, and exact foreign symlink;
 - foreign ancestor rejection leaves current unchanged;
 - foreign descendant rejection leaves current unchanged;
@@ -677,7 +813,7 @@ git add internal/claims/claims_test.go internal/publicfs/publicfs_test.go intern
 git commit -m "Cover promotion and claim parity"
 ```
 
-## Task 8: Maintenance, Post-Deploy, Metadata, Rollback, And Pruning Parity
+## Task 9: Maintenance, Post-Deploy, Metadata, Rollback, And Pruning Parity
 
 **Files:**
 - Modify: `internal/engine/promote_test.go`
@@ -748,7 +884,7 @@ git add internal/engine/promote_test.go internal/releases/releases_test.go inter
 git commit -m "Cover maintenance rollback and metadata parity"
 ```
 
-## Task 9: Live E2E Parity Expansion
+## Task 10: Live E2E Parity Expansion
 
 **Files:**
 - Modify: `scripts/live-e2e.sh`
@@ -791,7 +927,7 @@ git add scripts/live-e2e.sh tests/test_live_e2e_static.sh docs/testing-matrix.md
 git commit -m "Expand Go live E2E parity coverage"
 ```
 
-## Task 10: Remove Bash Spec And Bash-Era Docs
+## Task 11: Remove Bash Spec And Bash-Era Docs
 
 **Files:**
 - Delete: `spec/`
@@ -878,7 +1014,7 @@ git add -A
 git commit -m "Remove Bash reference after Go test parity"
 ```
 
-## Task 11: Final Release Confidence Pass
+## Task 12: Final Release Confidence Pass
 
 **Files:**
 - Modify only if verification exposes a real issue.

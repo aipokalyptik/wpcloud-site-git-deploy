@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/claims"
@@ -17,6 +18,7 @@ import (
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/publicfs"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 type PromoteOptions struct {
@@ -471,6 +473,9 @@ func discoverBoundaryClaims(docroot string) ([]string, error) {
 		if info.Mode()&os.ModeSticky == 0 {
 			return nil
 		}
+		if !rootOwnedOrRootGroup(info) {
+			return nil
+		}
 		rel, err := filepath.Rel(docroot, path)
 		if err != nil {
 			return err
@@ -501,7 +506,12 @@ func discoverProtectedAnchors(docroot string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if info.Mode().Perm()&0o222 != 0 {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("stat data unavailable for %s", path)
+		}
+		writable := unix.Access(path, unix.W_OK) == nil
+		if !protectedAnchorCandidate(stat.Uid, stat.Gid, writable) {
 			return nil
 		}
 		rel, err := filepath.Rel(docroot, path)
@@ -513,6 +523,21 @@ func discoverProtectedAnchors(docroot string) ([]string, error) {
 	})
 	sort.Strings(anchors)
 	return anchors, err
+}
+
+func rootOwnedOrRootGroup(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return stat.Uid == 0 || stat.Gid == 0
+}
+
+func protectedAnchorCandidate(uid, gid uint32, writableByCurrentUser bool) bool {
+	if uid != 0 && gid != 0 {
+		return false
+	}
+	return !writableByCurrentUser
 }
 
 func validateClaimsNotProtected(newClaims, protectedAnchors []string) error {

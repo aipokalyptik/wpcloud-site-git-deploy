@@ -152,6 +152,49 @@ func TestPromoteAllowsSharedMediaLeafAndRejectsSharedRuntimePath(t *testing.T) {
 	}
 }
 
+func TestDiscoverBoundaryClaimsRequiresPrivilegedOwnership(t *testing.T) {
+	docroot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(docroot, "wp-content", "plugins"), 0o1777); err != nil {
+		t.Fatal(err)
+	}
+
+	boundaries, err := discoverBoundaryClaims(docroot)
+	if err != nil {
+		t.Fatalf("discover boundaries failed: %v", err)
+	}
+	if len(boundaries) != 0 {
+		t.Fatalf("non-root-owned sticky directory should not be a boundary: %#v", boundaries)
+	}
+}
+
+func TestDiscoverProtectedAnchorsRequiresPrivilegedOwnership(t *testing.T) {
+	docroot := t.TempDir()
+	protectedPath := filepath.Join(docroot, "wp-config.php")
+	if err := os.WriteFile(protectedPath, []byte("local config\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	anchors, err := discoverProtectedAnchors(docroot)
+	if err != nil {
+		t.Fatalf("discover protected anchors failed: %v", err)
+	}
+	if len(anchors) != 0 {
+		t.Fatalf("non-root-owned read-only file should not be protected: %#v", anchors)
+	}
+}
+
+func TestProtectedAnchorPredicateUsesEffectiveWritability(t *testing.T) {
+	if !protectedAnchorCandidate(0, uint32(os.Getgid()), false) {
+		t.Fatal("root-owned path that the site user cannot write should be protected")
+	}
+	if protectedAnchorCandidate(uint32(os.Getuid()), uint32(os.Getgid()), false) {
+		t.Fatal("non-root-owned path should not be protected even when not writable")
+	}
+	if protectedAnchorCandidate(0, uint32(os.Getgid()), true) {
+		t.Fatal("root-owned path writable by the site user should not be protected")
+	}
+}
+
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(rel))
