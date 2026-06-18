@@ -17,6 +17,7 @@ import (
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/doctor"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/engine"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/execx"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
 )
 
@@ -244,14 +245,8 @@ func validateCommand(cmd *Command) error {
 			cmd.RefMode, cmd.RefValue = "commit", cmd.Commit
 		}
 	case "auth":
-		actions := 0
-		for _, active := range []bool{cmd.UseKey != "", cmd.ImportKey != "", cmd.Remove} {
-			if active {
-				actions++
-			}
-		}
-		if actions > 1 {
-			return errors.New("choose only one auth key source")
+		if err := auth.ValidateKeySource(cmd.UseKey, cmd.ImportKey, cmd.Remove); err != nil {
+			return err
 		}
 	case "destroy":
 		if cmd.ConfirmDestroy == "" {
@@ -812,7 +807,8 @@ func selectRollbackTarget(deployment config.Deployment) (string, error) {
 		name    string
 		modTime int64
 	}
-	var candidates []releaseEntry
+	var metadataCandidates []releaseEntry
+	var fallbackCandidates []releaseEntry
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Name() == current {
 			continue
@@ -821,7 +817,16 @@ func selectRollbackTarget(deployment config.Deployment) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		candidates = append(candidates, releaseEntry{name: entry.Name(), modTime: info.ModTime().UnixNano()})
+		candidate := releaseEntry{name: entry.Name(), modTime: info.ModTime().UnixNano()}
+		if _, err := releases.LoadMetadata(layout.ReleaseMetadata(entry.Name())); err == nil {
+			metadataCandidates = append(metadataCandidates, candidate)
+		} else {
+			fallbackCandidates = append(fallbackCandidates, candidate)
+		}
+	}
+	candidates := metadataCandidates
+	if len(candidates) == 0 {
+		candidates = fallbackCandidates
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].modTime == candidates[j].modTime {

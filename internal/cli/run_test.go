@@ -151,6 +151,57 @@ func TestRunDeployUsesDefaultRef(t *testing.T) {
 	}
 }
 
+func TestRunRollbackDefaultIgnoresReleaseWithoutMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := initGitRepoForCLI(t)
+	docroot := t.TempDir()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := Run(t.Context(), []string{
+		"init",
+		"--name", "site",
+		"--repo", repo,
+		"--docroot", docroot,
+		"--deployment-id", "site",
+		"--default-ref", "main",
+		"--no-maintenance-file",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if err := Run(t.Context(), []string{"deploy", "--name", "site"}, &stdout, &stderr); err != nil {
+		t.Fatalf("first deploy failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "index.html"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForCLI(t, repo, "add", "index.html")
+	runGitForCLI(t, repo, "commit", "-m", "second")
+	if err := Run(t.Context(), []string{"deploy", "--name", "site", "--force"}, &stdout, &stderr); err != nil {
+		t.Fatalf("second deploy failed: %v", err)
+	}
+
+	brokenRelease := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "releases", "broken-without-metadata")
+	if err := os.MkdirAll(brokenRelease, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenRelease, "index.html"), []byte("broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	if err := Run(t.Context(), []string{"rollback", "--name", "site"}, &stdout, &stderr); err != nil {
+		t.Fatalf("default rollback failed: %v", err)
+	}
+	if strings.Contains(stdout.String(), "broken-without-metadata") {
+		t.Fatalf("default rollback selected metadata-less release: %s", stdout.String())
+	}
+	if got := string(mustReadFile(t, filepath.Join(docroot, "index.html"))); got != "hello\n" {
+		t.Fatalf("default rollback should select metadata-backed release, got %q", got)
+	}
+}
+
 func TestRunAuthUseKeyRemoveAndDoctorOffline(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
