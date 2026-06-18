@@ -1,6 +1,9 @@
 package state
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 const DocrootNamespace = ".wpcloud-site-git-deploy"
 
@@ -47,6 +50,14 @@ func (l DocrootLayout) Base() string {
 
 func (l DocrootLayout) Current() string {
 	return filepath.Join(l.Base(), "current")
+}
+
+func (l DocrootLayout) CurrentReleaseID() (string, bool) {
+	target, err := os.Readlink(l.Current())
+	if err != nil {
+		return "", false
+	}
+	return filepath.Base(target), true
 }
 
 func (l DocrootLayout) Incoming(releaseID string) string {

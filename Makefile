@@ -4,6 +4,7 @@ GO ?= go
 GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
+VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || printf dev)
 
 BIN_DIR := dist
 BINARY := $(BIN_DIR)/wpcloud-site-git-deploy-$(GOOS)-$(GOARCH)
@@ -40,7 +41,7 @@ deps:
 build build-linux:
 	mkdir -p "$(BIN_DIR)" "$(GO_CACHE_DIR)" "$(GO_MOD_CACHE_DIR)"
 	$(GO_ENV) CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		$(GO) build -o "$(BINARY)" ./cmd/wpcloud-site-git-deploy
+		$(GO) build -ldflags "-X github.com/aipokalyptik/wpcloud-site-git-deploy/internal/cli.Version=$(VERSION)" -o "$(BINARY)" ./cmd/wpcloud-site-git-deploy
 
 test:
 	mkdir -p "$(GO_CACHE_DIR)" "$(GO_MOD_CACHE_DIR)"

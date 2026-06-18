@@ -15,7 +15,10 @@ elif [[ -x "$repo_root/$binary_name" ]]; then
 elif command -v go >/dev/null 2>&1; then
   (
     cd "$repo_root"
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$install_bin/$binary_name" ./cmd/wpcloud-site-git-deploy
+    version="$(git describe --tags --dirty --always 2>/dev/null || printf dev)"
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -ldflags "-X github.com/aipokalyptik/wpcloud-site-git-deploy/internal/cli.Version=$version" \
+      -o "$install_bin/$binary_name" ./cmd/wpcloud-site-git-deploy
   )
 else
   printf 'wpcloud-site-git-deploy: no bundled binary found and go is not installed\n' >&2

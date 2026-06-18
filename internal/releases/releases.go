@@ -20,6 +20,11 @@ type Metadata struct {
 	DeployedAt time.Time `json:"deployed_at"`
 }
 
+type Entry struct {
+	Name    string
+	ModTime time.Time
+}
+
 func NewID(now time.Time, commit string) (string, error) {
 	shortCommit := commit
 	if len(shortCommit) > 12 {
@@ -73,7 +78,7 @@ func LoadMetadata(path string) (Metadata, error) {
 	return metadata, nil
 }
 
-func Prune(releasesDir string, keepReleases int, activeRelease string) ([]string, error) {
+func List(releasesDir string) ([]Entry, error) {
 	entries, err := os.ReadDir(releasesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -81,11 +86,7 @@ func Prune(releasesDir string, keepReleases int, activeRelease string) ([]string
 		}
 		return nil, err
 	}
-	type releaseEntry struct {
-		name    string
-		modTime time.Time
-	}
-	var releases []releaseEntry
+	var releases []Entry
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -94,30 +95,38 @@ func Prune(releasesDir string, keepReleases int, activeRelease string) ([]string
 		if err != nil {
 			return nil, err
 		}
-		releases = append(releases, releaseEntry{name: entry.Name(), modTime: info.ModTime()})
+		releases = append(releases, Entry{Name: entry.Name(), ModTime: info.ModTime()})
 	}
 	sort.Slice(releases, func(i, j int) bool {
-		if releases[i].modTime.Equal(releases[j].modTime) {
-			return strings.Compare(releases[i].name, releases[j].name) > 0
+		if releases[i].ModTime.Equal(releases[j].ModTime) {
+			return strings.Compare(releases[i].Name, releases[j].Name) > 0
 		}
-		return releases[i].modTime.After(releases[j].modTime)
+		return releases[i].ModTime.After(releases[j].ModTime)
 	})
+	return releases, nil
+}
+
+func Prune(releasesDir string, keepReleases int, activeRelease string) ([]string, error) {
+	releases, err := List(releasesDir)
+	if err != nil {
+		return nil, err
+	}
 	keep := map[string]struct{}{activeRelease: {}}
 	for _, release := range releases {
 		if len(keep) >= keepReleases {
 			break
 		}
-		keep[release.name] = struct{}{}
+		keep[release.Name] = struct{}{}
 	}
 	var removed []string
 	for _, release := range releases {
-		if _, ok := keep[release.name]; ok {
+		if _, ok := keep[release.Name]; ok {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(releasesDir, release.name)); err != nil {
+		if err := os.RemoveAll(filepath.Join(releasesDir, release.Name)); err != nil {
 			return nil, err
 		}
-		removed = append(removed, release.name)
+		removed = append(removed, release.Name)
 	}
 	sort.Strings(removed)
 	return removed, nil

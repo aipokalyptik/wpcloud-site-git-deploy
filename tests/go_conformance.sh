@@ -83,10 +83,13 @@ release_count() {
 
 if [[ ! -x "$binary" ]]; then
   mkdir -p "$(dirname "$binary")"
+  version="$(git -C "$repo_root" describe --tags --dirty --always 2>/dev/null || printf dev)"
   GOCACHE="${GOCACHE:-$repo_root/.cache/go-build}" \
   GOMODCACHE="${GOMODCACHE:-$repo_root/.cache/go-mod}" \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -o "$binary" ./cmd/wpcloud-site-git-deploy
+    go build \
+      -ldflags "-X github.com/aipokalyptik/wpcloud-site-git-deploy/internal/cli.Version=$version" \
+      -o "$binary" ./cmd/wpcloud-site-git-deploy
 fi
 
 "$binary" --help >"$tmpdir/help.txt"
