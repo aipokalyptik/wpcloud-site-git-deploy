@@ -2,6 +2,7 @@ package engine
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,6 +81,41 @@ func TestRollbackToRelease(t *testing.T) {
 	}
 	if got := string(mustRead(t, filepath.Join(docroot, "index.html"))); got != "hello\n" {
 		t.Fatalf("rollback did not restore first release: %q", got)
+	}
+}
+
+func TestPrepareGitFeaturesRejectsUnresolvedLFSPointer(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git fixture requires git")
+	}
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	runGit(t, worktree, "config", "user.email", "test@example.com")
+	runGit(t, worktree, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(worktree, ".gitattributes"), []byte("*.bin filter=lfs diff=lfs merge=lfs -text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pointer := strings.Join([]string{
+		"version https://git-lfs.github.com/spec/v1",
+		"oid sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"size 12",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(worktree, "asset.bin"), []byte(pointer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, worktree, "add", ".gitattributes", "asset.bin")
+
+	fakeBin := t.TempDir()
+	fakeGitLFS := filepath.Join(fakeBin, "git-lfs")
+	if err := os.WriteFile(fakeGitLFS, []byte("#!/usr/bin/env sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := prepareGitFeatures(t.Context(), worktree, nil)
+	if err == nil || !strings.Contains(err.Error(), "Git LFS pointer files remain after git lfs pull") {
+		t.Fatalf("expected unresolved LFS pointer rejection, got %v", err)
 	}
 }
 

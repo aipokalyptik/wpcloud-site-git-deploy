@@ -11,6 +11,7 @@ atomic path exchange.
 
 - Go module: `github.com/aipokalyptik/wpcloud-site-git-deploy`
 - Binary entrypoint: `cmd/wpcloud-site-git-deploy`
+- Correctness contract: `docs/invariants.md`
 - Correctness coverage: Go unit/integration tests, the Go conformance harness,
   the testing matrix, and the live E2E matrix
 
@@ -132,5 +133,6 @@ Go CLI.
 
 ## Reference Docs
 
-The supported user-facing behavior is documented by this README, the Go testing
-matrix, and the live E2E matrix.
+The supported user-facing behavior is documented by this README. The core
+correctness contract lives in `docs/invariants.md`, and test coverage is mapped
+in `docs/testing-matrix.md`.

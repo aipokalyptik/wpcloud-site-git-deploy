@@ -78,6 +78,27 @@ func TestPromoteRejectsForeignAncestor(t *testing.T) {
 	}
 }
 
+func TestPromoteRejectsForeignDescendant(t *testing.T) {
+	docroot := t.TempDir()
+	pluginsDir := filepath.Join(docroot, "wp-content", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../.wpcloud-site-git-deploy/deployments/other/current/wp-content/plugins/other.php", filepath.Join(pluginsDir, "other.php")); err != nil {
+		t.Fatal(err)
+	}
+	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
+	writeFile(t, incoming, "wp-content/plugins/plugin.php", "new\n")
+
+	err := Promote(PromoteOptions{Docroot: docroot, DeploymentID: "site", ReleaseID: "r1", KeepReleases: 3, Boundaries: []string{"wp-content"}})
+	if err == nil || !strings.Contains(err.Error(), "claim contains another deployment: wp-content/plugins") {
+		t.Fatalf("expected foreign descendant rejection, got %v", err)
+	}
+	if got := readlink(t, filepath.Join(pluginsDir, "other.php")); !strings.Contains(got, "deployments/other/current") {
+		t.Fatalf("foreign descendant symlink should remain untouched, got %s", got)
+	}
+}
+
 func TestPromoteRunsPostDeployWithWordPressMaintenanceMarker(t *testing.T) {
 	docroot := t.TempDir()
 	incoming := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "incoming", "r1")
