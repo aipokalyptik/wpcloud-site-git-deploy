@@ -11,6 +11,7 @@ import (
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/auth"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/execx"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/lock"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
 )
@@ -56,6 +57,19 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	if err != nil {
 		return DeployResult{}, err
 	}
+	if err := os.MkdirAll(docrootLayout.Base(), 0o755); err != nil {
+		return DeployResult{}, err
+	}
+	deployLock, err := lock.Acquire(docrootLayout.Lock())
+	if err != nil {
+		return DeployResult{}, err
+	}
+	defer deployLock.Close()
+	// The lock is held before the no-op check so a cron deploy can still clean
+	// staging left by a killed earlier process even when there is no new commit.
+	if err := cleanupStaleStaging(ctx, repoDir, layout, docrootLayout, options.Config.Name, ""); err != nil {
+		return DeployResult{}, err
+	}
 	if !options.Force {
 		// A cron-safe deploy is a no-op only when both the resolved commit and
 		// deploy root match the currently active release metadata.
@@ -99,6 +113,7 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	if err := os.MkdirAll(incoming, 0o755); err != nil {
 		return DeployResult{}, err
 	}
+	defer os.RemoveAll(incoming)
 	if err := copySourceToIncoming(ctx, source, incoming, docrootLayout); err != nil {
 		return DeployResult{}, err
 	}
@@ -110,14 +125,15 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 	if options.PostDeployOverride != "" {
 		postDeploy = options.PostDeployOverride
 	}
-	if err := Promote(PromoteOptions{
+	if err := promoteLocked(PromoteOptions{
+		Context:      ctx,
 		Docroot:      options.Config.Docroot,
 		DeploymentID: options.Config.DeploymentID,
 		ReleaseID:    releaseID,
 		KeepReleases: options.Config.KeepReleases,
 		PostDeploy:   postDeploy,
 		Maintenance:  maintenance,
-	}); err != nil {
+	}, docrootLayout); err != nil {
 		return DeployResult{}, err
 	}
 	meta := releases.Metadata{
@@ -132,6 +148,41 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 		return DeployResult{}, err
 	}
 	return DeployResult{ReleaseID: releaseID, Commit: commit}, nil
+}
+
+func cleanupStaleStaging(ctx context.Context, repoDir string, layout state.Layout, docrootLayout state.DocrootLayout, name, currentReleaseID string) error {
+	// A SIGKILL or host failure can leave both the worktree directory and Git's
+	// admin record behind. Remove stale directories first, then ask Git to prune
+	// any now-dangling admin records from the bare repo cache.
+	if err := removeStaleChildren(layout.WorktreeRoot(name), currentReleaseID); err != nil {
+		return err
+	}
+	_, _ = git(ctx, repoDir, nil, "worktree", "prune")
+	// Incoming directories live under the docroot namespace and are safe to
+	// remove before staging because each deploy uses a fresh release id.
+	if err := removeStaleChildren(docrootLayout.IncomingRoot(), currentReleaseID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func removeStaleChildren(root, keepName string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == keepName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureRepo(ctx context.Context, repoDir, repoURL string, env []string) error {

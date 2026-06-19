@@ -14,7 +14,7 @@ GO_ENV := GOCACHE=$(GO_CACHE_DIR) GOMODCACHE=$(GO_MOD_CACHE_DIR)
 
 SHELL_FILES := scripts/install.sh scripts/live-e2e.sh tests/*.sh
 
-.PHONY: help clean deps build build-linux test vet syntax shellcheck conformance check live-e2e
+.PHONY: help clean deps build build-linux test vet syntax shellcheck conformance check vm-go vm-check live-e2e
 
 help:
 	@printf '%s\n' 'Targets:'
@@ -27,6 +27,8 @@ help:
 	@printf '%s\n' '  make shellcheck  Run shellcheck over maintained shell scripts'
 	@printf '%s\n' '  make conformance Run black-box Go binary conformance tests'
 	@printf '%s\n' '  make check       Run local static and Go checks'
+	@printf '%s\n' '  make vm-go       Ensure the Lima Linux VM has a usable Go compiler'
+	@printf '%s\n' '  make vm-check    Run Go checks inside the Lima Linux VM'
 	@printf '%s\n' '  make live-e2e    Run the WP Cloud live E2E matrix'
 	@printf '%s\n' '  make clean       Remove generated build and cache artifacts'
 
@@ -62,7 +64,14 @@ conformance: build
 
 check: test vet syntax shellcheck conformance
 	bash tests/test_live_e2e_static.sh
+	bash tests/test_vm_static.sh
 	git diff --check
+
+vm-go:
+	scripts/ensure-lima-go.sh
+
+vm-check:
+	scripts/vm-check.sh
 
 live-e2e:
 	scripts/live-e2e.sh

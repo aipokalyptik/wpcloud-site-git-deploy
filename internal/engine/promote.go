@@ -43,15 +43,7 @@ type RollbackOptions struct {
 var deploymentTargetPattern = regexp.MustCompile(`(^|/)\.wpcloud-site-git-deploy/deployments/([^/]+)/current($|/)`)
 
 func Promote(options PromoteOptions) error {
-	if options.Context == nil {
-		options.Context = context.Background()
-	}
-	if options.KeepReleases < 1 {
-		options.KeepReleases = 1
-	}
 	layout := state.NewDocroot(options.Docroot, options.DeploymentID)
-	incoming := layout.Incoming(options.ReleaseID)
-	release := layout.Release(options.ReleaseID)
 	if err := os.MkdirAll(layout.Base(), 0o755); err != nil {
 		return err
 	}
@@ -60,6 +52,21 @@ func Promote(options PromoteOptions) error {
 		return err
 	}
 	defer deployLock.Close()
+	return promoteLocked(options, layout)
+}
+
+func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
+	if options.Context == nil {
+		options.Context = context.Background()
+	}
+	if options.KeepReleases < 1 {
+		options.KeepReleases = 1
+	}
+	incoming := layout.Incoming(options.ReleaseID)
+	release := layout.Release(options.ReleaseID)
+	if err := os.MkdirAll(layout.Base(), 0o755); err != nil {
+		return err
+	}
 	// A previous failure can leave the temporary side of an exchange behind.
 	// Clean it before doing new work so the retry path is idempotent.
 	if err := cleanupExchangedPaths(layout); err != nil {

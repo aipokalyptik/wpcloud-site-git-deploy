@@ -26,6 +26,9 @@ must preserve.
 - A successful deploy writes release metadata only after promotion has completed.
 - A failed deploy must clean temporary worktrees and incoming release staging
   when failure occurs before promotion.
+- A deploy must acquire the deployment lock before staging worktree or incoming
+  content. While holding that lock, it must sweep stale worktree and incoming
+  staging directories left by killed earlier processes, including on no-op runs.
 - A failed promotion before public path reconciliation must remove the unserved
   release directory so rollback cannot select a rejected release.
 

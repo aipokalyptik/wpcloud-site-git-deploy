@@ -37,6 +37,8 @@ write into `$HOME`:
 make build      # static Linux amd64 binary in dist/
 make check      # Go tests, vet, shell syntax, shellcheck, and diff checks
 make conformance # black-box Go binary conformance checks
+make vm-go      # install or verify Go inside the configured Lima Linux VM
+make vm-check   # run the full Linux VM verification path, bootstrapping Go first
 make clean      # remove generated build/cache artifacts
 make live-e2e   # run the disposable-site E2E matrix
 ```
@@ -78,6 +80,10 @@ make check
 `make check` runs Go tests, `go vet`, maintained shell syntax checks,
 `shellcheck`, the Go conformance harness, static live-E2E script checks, and
 diff whitespace checks.
+
+On macOS, use `make vm-check` for a production-like Linux verification pass. It
+first runs `scripts/ensure-lima-go.sh`, which installs the configured official
+Linux amd64 Go toolchain into the Lima VM when the compiler is missing.
 
 Run the Go live E2E matrix against the disposable WP Cloud/Pressable site
 configured in `.env.local`:

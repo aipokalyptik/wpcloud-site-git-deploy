@@ -31,6 +31,10 @@ func (l Layout) Worktree(name, releaseID string) string {
 	return filepath.Join(l.Root, "tmp", name, releaseID)
 }
 
+func (l Layout) WorktreeRoot(name string) string {
+	return filepath.Join(l.Root, "tmp", name)
+}
+
 func (l Layout) Key(name string) string {
 	return filepath.Join(l.Root, "keys", name+"_ed25519")
 }
@@ -62,6 +66,10 @@ func (l DocrootLayout) CurrentReleaseID() (string, bool) {
 
 func (l DocrootLayout) Incoming(releaseID string) string {
 	return filepath.Join(l.Base(), "incoming", releaseID)
+}
+
+func (l DocrootLayout) IncomingRoot() string {
+	return filepath.Join(l.Base(), "incoming")
 }
 
 func (l DocrootLayout) Release(releaseID string) string {

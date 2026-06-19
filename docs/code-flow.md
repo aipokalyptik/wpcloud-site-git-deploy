@@ -189,6 +189,8 @@ flowchart TD
   REPO["ensure repo cache"]
   FETCH["fetch refs and tags"]
   RESOLVE["resolve commit"]
+  LOCK["acquire deployment lock"]
+  SWEEP["sweep stale worktrees and incoming dirs"]
   NOOP{"same commit and deploy root, no force?"}
   WORKTREE["create git worktree"]
   FEATURES["prepare submodules and LFS"]
@@ -201,7 +203,7 @@ flowchart TD
   PARSE --> REF
   REF -->|"none"| LOAD
   REF -->|"branch/tag/commit"| LOAD
-  LOAD --> ENGINE --> REQUIRE --> REPO --> FETCH --> RESOLVE --> NOOP
+  LOAD --> ENGINE --> REQUIRE --> REPO --> FETCH --> RESOLVE --> LOCK --> SWEEP --> NOOP
   NOOP -->|"yes"| PRINT
   NOOP -->|"no or --force"| WORKTREE --> FEATURES --> ROOT --> RSYNC --> PROMOTE --> META --> PRINT
 ```
@@ -213,12 +215,13 @@ Source anchors:
 - CLI handler: [internal/cli/run.go](../internal/cli/run.go#L261)
 - Engine entry: [internal/engine/deploy.go](../internal/engine/deploy.go#L34)
 - Repo cache and fetch: [internal/engine/deploy.go](../internal/engine/deploy.go#L46)
-- No-op check: [internal/engine/deploy.go](../internal/engine/deploy.go#L59)
-- Worktree: [internal/engine/deploy.go](../internal/engine/deploy.go#L70)
-- Git features: [internal/engine/deploy.go](../internal/engine/deploy.go#L234)
-- Rsync incoming: [internal/engine/deploy.go](../internal/engine/deploy.go#L308)
-- Promotion call: [internal/engine/deploy.go](../internal/engine/deploy.go#L113)
-- Metadata write: [internal/engine/deploy.go](../internal/engine/deploy.go#L123)
+- Lock and stale staging cleanup: [internal/engine/deploy.go](../internal/engine/deploy.go#L60)
+- No-op check: [internal/engine/deploy.go](../internal/engine/deploy.go#L73)
+- Worktree: [internal/engine/deploy.go](../internal/engine/deploy.go#L84)
+- Git features: [internal/engine/deploy.go](../internal/engine/deploy.go#L285)
+- Rsync incoming: [internal/engine/deploy.go](../internal/engine/deploy.go#L359)
+- Promotion call: [internal/engine/deploy.go](../internal/engine/deploy.go#L128)
+- Metadata write: [internal/engine/deploy.go](../internal/engine/deploy.go#L147)
 
 ### Deploy Decision Tree
 
@@ -235,6 +238,8 @@ flowchart TD
   SETURL["set origin URL"]
   FETCH{"fetch succeeds?"}
   RESOLVE{"ref resolves?"}
+  LOCK{"deployment lock acquired?"}
+  SWEEP{"stale staging cleanup succeeds?"}
   SAME{"current metadata matches commit and deploy root?"}
   FORCE{"--force?"}
   WORKTREE{"worktree add succeeds?"}
@@ -256,7 +261,11 @@ flowchart TD
   FETCH -->|"no"| FAIL
   FETCH -->|"yes"| RESOLVE
   RESOLVE -->|"no"| FAIL
-  RESOLVE -->|"yes"| SAME
+  RESOLVE -->|"yes"| LOCK
+  LOCK -->|"no"| FAIL
+  LOCK -->|"yes"| SWEEP
+  SWEEP -->|"no"| FAIL
+  SWEEP -->|"yes"| SAME
   SAME -->|"yes"| FORCE
   FORCE -->|"no"| NOOP
   FORCE -->|"yes"| WORKTREE
@@ -280,15 +289,16 @@ flowchart TD
 Source anchors:
 
 - Command requirements: [internal/engine/deploy.go](../internal/engine/deploy.go#L35)
-- Repo cache behavior: [internal/engine/deploy.go](../internal/engine/deploy.go#L137)
+- Repo cache behavior: [internal/engine/deploy.go](../internal/engine/deploy.go#L188)
 - Fetch and GC: [internal/engine/deploy.go](../internal/engine/deploy.go#L49)
-- Ref resolution: [internal/engine/deploy.go](../internal/engine/deploy.go#L194)
-- No-op decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L59)
-- Worktree cleanup: [internal/engine/deploy.go](../internal/engine/deploy.go#L70)
-- Submodule decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L235)
-- LFS decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L253)
-- Deploy root decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L85)
-- Rsync/link-dest: [internal/engine/deploy.go](../internal/engine/deploy.go#L308)
+- Ref resolution: [internal/engine/deploy.go](../internal/engine/deploy.go#L245)
+- Lock and stale staging cleanup: [internal/engine/deploy.go](../internal/engine/deploy.go#L60)
+- No-op decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L73)
+- Worktree cleanup: [internal/engine/deploy.go](../internal/engine/deploy.go#L84)
+- Submodule decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L286)
+- LFS decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L304)
+- Deploy root decision: [internal/engine/deploy.go](../internal/engine/deploy.go#L103)
+- Rsync/link-dest: [internal/engine/deploy.go](../internal/engine/deploy.go#L359)
 
 Deploy decisions:
 
@@ -298,6 +308,8 @@ Deploy decisions:
 | Repo cache | Reuse existing bare cache or clone it. | Fail if clone/cache access fails. | Keeps repeated deploys fast while preserving a single source of refs. |
 | Fetch | Fetch refs/tags and run best-effort GC. | Fail if fetch fails. | Deploy must compare against the latest remote state. |
 | Ref resolution | Resolve branch, tag, or commit to a commit SHA. | Fail if the requested ref is invalid. | Release metadata records the exact commit that was promoted. |
+| Deployment lock | Continue only after the per-deployment lock is acquired. | Fail with a busy deployment before staging worktree or incoming content. | Prevents concurrent deploys from creating unbounded staging directories. |
+| Stale staging sweep | Remove old `tmp/<name>/*` worktrees and old `incoming/*` directories, then prune Git worktree metadata. | Fail if stale staging cannot be removed. | Bounds disk use after SIGKILL, OOM, disconnect, or earlier failed deploys, including no-op cron runs. |
 | No-op check | Return `no_op=true` when commit and deploy root match current metadata. | Continue when `--force` is set or metadata differs. | Makes cron-safe deploys cheap while preserving intentional redeploys. |
 | Worktree | Add a detached worktree for the target commit. | Fail and clean temp worktree. | Keeps the cache bare and stages from a real filesystem tree. |
 | Submodules | Initialize recursively and verify none remain uninitialized. | Fail before rsync. | A served release should not contain unresolved submodule placeholders. |
@@ -347,15 +359,15 @@ flowchart TD
 Source anchors:
 
 - Promotion entry and lock: [internal/engine/promote.go](../internal/engine/promote.go#L45)
-- Incoming/release move: [internal/engine/promote.go](../internal/engine/promote.go#L71)
-- Maintenance creation: [internal/engine/promote.go](../internal/engine/promote.go#L80)
-- Claim computation: [internal/engine/promote.go](../internal/engine/promote.go#L105)
-- Protected anchors: [internal/engine/promote.go](../internal/engine/promote.go#L109)
-- Materialized claims: [internal/engine/promote.go](../internal/engine/promote.go#L116)
-- Reconciliation: [internal/engine/promote.go](../internal/engine/promote.go#L268)
-- Current switch: [internal/engine/promote.go](../internal/engine/promote.go#L315)
+- Incoming/release move: [internal/engine/promote.go](../internal/engine/promote.go#L78)
+- Maintenance creation: [internal/engine/promote.go](../internal/engine/promote.go#L87)
+- Claim computation: [internal/engine/promote.go](../internal/engine/promote.go#L112)
+- Protected anchors: [internal/engine/promote.go](../internal/engine/promote.go#L116)
+- Materialized claims: [internal/engine/promote.go](../internal/engine/promote.go#L123)
+- Reconciliation: [internal/engine/promote.go](../internal/engine/promote.go#L275)
+- Current switch: [internal/engine/promote.go](../internal/engine/promote.go#L322)
 - Symlink assertion: [internal/publicfs/publicfs.go](../internal/publicfs/publicfs.go#L28)
-- Post-deploy hook: [internal/engine/promote.go](../internal/engine/promote.go#L608)
+- Post-deploy hook: [internal/engine/promote.go](../internal/engine/promote.go#L615)
 - Pruning: [internal/releases/releases.go](../internal/releases/releases.go#L109)
 
 Promotion phases:

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/lock"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
 )
 
 func TestDeployBranchAndNoOp(t *testing.T) {
@@ -37,6 +39,15 @@ func TestDeployBranchAndNoOp(t *testing.T) {
 	if got := string(mustRead(t, filepath.Join(docroot, "index.html"))); got != "hello\n" {
 		t.Fatalf("unexpected deployed content: %q", got)
 	}
+	docrootLayout := state.NewDocroot(docroot, "site")
+	staleIncoming := filepath.Join(docrootLayout.Base(), "incoming", "stale-before-noop")
+	staleWorktree := filepath.Join(stateRoot, "tmp", "site", "stale-before-noop")
+	if err := os.MkdirAll(staleIncoming, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(staleWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := Deploy(t.Context(), DeployOptions{StateRoot: stateRoot, Config: cfg})
 	if err != nil {
@@ -44,6 +55,12 @@ func TestDeployBranchAndNoOp(t *testing.T) {
 	}
 	if !second.NoOp {
 		t.Fatal("same commit/default ref deploy should be a no-op")
+	}
+	if _, err := os.Stat(staleIncoming); !os.IsNotExist(err) {
+		t.Fatalf("no-op deploy should sweep stale incoming, err=%v", err)
+	}
+	if _, err := os.Stat(staleWorktree); !os.IsNotExist(err) {
+		t.Fatalf("no-op deploy should sweep stale worktree, err=%v", err)
 	}
 }
 
@@ -81,6 +98,81 @@ func TestRollbackToRelease(t *testing.T) {
 	}
 	if got := string(mustRead(t, filepath.Join(docroot, "index.html"))); got != "hello\n" {
 		t.Fatalf("rollback did not restore first release: %q", got)
+	}
+}
+
+func TestDeployFailsBeforeStagingWhenDeploymentLockIsBusy(t *testing.T) {
+	repo := initGitRepo(t)
+	docroot := t.TempDir()
+	stateRoot := filepath.Join(t.TempDir(), "state")
+	cfg := config.Deployment{
+		SchemaVersion: config.SchemaVersion,
+		Name:          "site",
+		RepoURL:       repo,
+		Docroot:       docroot,
+		DeploymentID:  "site",
+		DefaultRef:    "main",
+		KeepReleases:  3,
+		Maintenance:   config.Maintenance{Enabled: false},
+	}
+	docrootLayout := state.NewDocroot(docroot, "site")
+	if err := os.MkdirAll(docrootLayout.Base(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	heldLock, err := lock.Acquire(docrootLayout.Lock())
+	if err != nil {
+		t.Fatalf("test lock acquire failed: %v", err)
+	}
+	defer heldLock.Close()
+
+	_, err = Deploy(t.Context(), DeployOptions{StateRoot: stateRoot, Config: cfg, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "deployment already running") {
+		t.Fatalf("expected busy deployment lock, got %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(docrootLayout.Base(), "incoming")); err == nil && len(entries) != 0 {
+		t.Fatalf("busy deploy should not leave incoming staging dirs: %#v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading incoming dir failed: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(stateRoot, "tmp", "site")); err == nil && len(entries) != 0 {
+		t.Fatalf("busy deploy should not leave temp worktrees: %#v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading temp worktree dir failed: %v", err)
+	}
+}
+
+func TestDeploySweepsStaleIncomingAndWorktreeDirectories(t *testing.T) {
+	repo := initGitRepo(t)
+	docroot := t.TempDir()
+	stateRoot := filepath.Join(t.TempDir(), "state")
+	cfg := config.Deployment{
+		SchemaVersion: config.SchemaVersion,
+		Name:          "site",
+		RepoURL:       repo,
+		Docroot:       docroot,
+		DeploymentID:  "site",
+		DefaultRef:    "main",
+		KeepReleases:  3,
+		Maintenance:   config.Maintenance{Enabled: false},
+	}
+	docrootLayout := state.NewDocroot(docroot, "site")
+	staleIncoming := filepath.Join(docrootLayout.Base(), "incoming", "stale-incoming")
+	staleWorktree := filepath.Join(stateRoot, "tmp", "site", "stale-worktree")
+	if err := os.MkdirAll(staleIncoming, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(staleWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Deploy(t.Context(), DeployOptions{StateRoot: stateRoot, Config: cfg, Force: true}); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+	if _, err := os.Stat(staleIncoming); !os.IsNotExist(err) {
+		t.Fatalf("stale incoming should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(staleWorktree); !os.IsNotExist(err) {
+		t.Fatalf("stale worktree should be removed, err=%v", err)
 	}
 }
 
