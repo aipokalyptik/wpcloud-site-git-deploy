@@ -17,6 +17,7 @@ import (
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/lock"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/publicfs"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/report"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
 	"golang.org/x/sys/unix"
 )
@@ -31,6 +32,7 @@ type PromoteOptions struct {
 	Home         string
 	PostDeploy   string
 	Maintenance  config.Maintenance
+	Report       *report.Collector
 }
 
 type RollbackOptions struct {
@@ -46,6 +48,13 @@ type docrootFacts struct {
 	boundaries       []string
 	protectedAnchors []string
 	materialized     []string
+	entries          int
+	symlinks         int
+}
+
+type reconcileStats struct {
+	created   int
+	exchanged int
 }
 
 func Promote(options PromoteOptions) error {
@@ -97,10 +106,15 @@ func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
 	if maintenanceOwned {
 		defer cleanupOwnedMaintenanceFile(options.Docroot, options.DeploymentID, options.Maintenance)
 	}
-	facts, err := discoverDocrootFacts(options.Docroot, options.DeploymentID, len(options.Boundaries) == 0, true)
-	if err != nil {
+	var facts docrootFacts
+	if err := promotePhase(options.Report, "promote.discover_docroot_facts", func() error {
+		var err error
+		facts, err = discoverDocrootFacts(options.Docroot, options.DeploymentID, len(options.Boundaries) == 0, true)
+		return err
+	}); err != nil {
 		return err
 	}
+	recordDocrootStats(options.Report, facts)
 	boundaries := options.Boundaries
 	if len(boundaries) == 0 {
 		boundaries = facts.boundaries
@@ -119,26 +133,52 @@ func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
 	if err := os.Chtimes(release, time.Now(), time.Now()); err != nil {
 		return err
 	}
-	newClaims, err := claims.Compute(release, boundaries, true)
-	if err != nil {
+	var newClaims []string
+	if err := promotePhase(options.Report, "promote.compute_claims", func() error {
+		var err error
+		newClaims, err = claims.Compute(release, boundaries, true)
+		return err
+	}); err != nil {
 		return err
 	}
-	if err := validateClaimsNotProtected(newClaims, facts.protectedAnchors); err != nil {
+	if err := promotePhase(options.Report, "promote.validate_protected", func() error {
+		return validateClaimsNotProtected(newClaims, facts.protectedAnchors)
+	}); err != nil {
 		return err
 	}
 	oldClaims, _ := claims.Compute(currentReleasePath(layout), boundaries, false)
 	// Materialized public symlinks are included because earlier failed or manual
 	// repairs can leave owned claims that are no longer derivable from current.
 	oldClaims = union(oldClaims, facts.materialized)
-	removedClaims := claims.Removed(oldClaims, newClaims)
+	var removedClaims []string
+	if err := promotePhase(options.Report, "promote.compute_removed", func() error {
+		removedClaims = claims.Removed(oldClaims, newClaims)
+		recordClaimStats(options.Report, newClaims, oldClaims, facts.materialized, removedClaims)
+		return nil
+	}); err != nil {
+		return err
+	}
 	cleanupReleaseOnFailure = false
 	// If a path changes shape, such as file -> directory, remove the old owned
 	// symlink before creating the new claim so reconciliation can proceed.
-	cleanupOverlappingRemovedClaims(options.Docroot, options.DeploymentID, removedClaims, newClaims)
-	if err := reconcileNewClaims(options.Docroot, options.DeploymentID, newClaims); err != nil {
+	if err := promotePhase(options.Report, "promote.overlap_cleanup", func() error {
+		cleanupOverlappingRemovedClaims(options.Docroot, options.DeploymentID, removedClaims, newClaims)
+		return nil
+	}); err != nil {
 		return err
 	}
-	if err := switchCurrent(layout, options.ReleaseID); err != nil {
+	var reconcile reconcileStats
+	if err := promotePhase(options.Report, "promote.reconcile", func() error {
+		var err error
+		reconcile, err = reconcileNewClaims(options.Docroot, options.DeploymentID, newClaims)
+		return err
+	}); err != nil {
+		return err
+	}
+	recordReconcileStats(options.Report, reconcile)
+	if err := promotePhase(options.Report, "promote.switch_current", func() error {
+		return switchCurrent(layout, options.ReleaseID)
+	}); err != nil {
 		return err
 	}
 	// The public "current" pointer must stay relative to the docroot-visible
@@ -152,18 +192,38 @@ func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
 	for _, claim := range removedClaims {
 		removeOwnedClaim(options.Docroot, options.DeploymentID, claim)
 	}
-	if err := publicfs.AssertClaimSymlinksUnderDocroot(options.Docroot, newClaims, options.Home); err != nil {
+	if err := promotePhase(options.Report, "promote.assert_symlinks", func() error {
+		return publicfs.AssertClaimSymlinksUnderDocroot(options.Docroot, newClaims, options.Home)
+	}); err != nil {
 		return err
 	}
-	if err := runPostDeploy(options.Context, options.Docroot, options.PostDeploy); err != nil {
+	if err := promotePhase(options.Report, "promote.post_deploy_hook", func() error {
+		return runPostDeploy(options.Context, options.Docroot, options.PostDeploy)
+	}); err != nil {
 		return err
 	}
 	// Hooks run while maintenance is active. This explicit success cleanup pairs
 	// with the deferred failure cleanup so owned markers are not left behind.
 	cleanupOwnedMaintenanceFile(options.Docroot, options.DeploymentID, options.Maintenance)
 	maintenanceOwned = false
-	_, err = releases.Prune(filepath.Dir(release), options.KeepReleases, options.ReleaseID)
-	return err
+	return promotePhase(options.Report, "promote.prune", func() error {
+		pruned, err := releases.Prune(filepath.Dir(release), options.KeepReleases, options.ReleaseID)
+		if err != nil {
+			return err
+		}
+		retained, err := releases.List(filepath.Dir(release))
+		if err != nil {
+			return err
+		}
+		if options.Report != nil {
+			options.Report.Stats().Releases = report.ReleaseStats{
+				Retained: len(retained),
+				Pruned:   len(pruned),
+				Keep:     options.KeepReleases,
+			}
+		}
+		return nil
+	})
 }
 
 func Rollback(options RollbackOptions) error {
@@ -215,7 +275,7 @@ func Rollback(options RollbackOptions) error {
 	// the public claims needed to make the selected existing release active.
 	removedClaims := claims.Removed(union(oldClaims, facts.materialized), newClaims)
 	cleanupOverlappingRemovedClaims(options.Config.Docroot, options.Config.DeploymentID, removedClaims, newClaims)
-	if err := reconcileNewClaims(options.Config.Docroot, options.Config.DeploymentID, newClaims); err != nil {
+	if _, err := reconcileNewClaims(options.Config.Docroot, options.Config.DeploymentID, newClaims); err != nil {
 		return err
 	}
 	if err := switchCurrent(layout, options.ReleaseID); err != nil {
@@ -266,51 +326,54 @@ func currentReleasePath(layout state.DocrootLayout) string {
 	return filepath.Join(layout.Base(), target)
 }
 
-func reconcileNewClaims(docroot, deploymentID string, newClaims []string) error {
+func reconcileNewClaims(docroot, deploymentID string, newClaims []string) (reconcileStats, error) {
 	layout := state.NewDocroot(docroot, deploymentID)
 	exchangedPathsFile := layout.ExchangedPaths()
 	if err := os.WriteFile(exchangedPathsFile, nil, 0o644); err != nil {
-		return err
+		return reconcileStats{}, err
 	}
+	var stats reconcileStats
 	for _, claim := range newClaims {
 		publicPath := filepath.Join(docroot, filepath.FromSlash(claim))
 		// Exact path takeover is allowed, but this deployment must not route
 		// through or engulf another deployment's subtree.
 		if err := rejectForeignAncestor(docroot, deploymentID, claim); err != nil {
-			return err
+			return stats, err
 		}
 		if err := rejectForeignDescendant(deploymentID, claim, publicPath); err != nil {
-			return err
+			return stats, err
 		}
 		if err := os.MkdirAll(filepath.Dir(publicPath), 0o755); err != nil {
-			return err
+			return stats, err
 		}
 		tmpLink := filepath.Join(filepath.Dir(publicPath), "."+filepath.Base(publicPath)+".wpcloud-site-git-deploy.tmp")
 		os.Remove(tmpLink)
 		if err := os.Symlink(publicfs.PublicSymlinkTarget(deploymentID, claim), tmpLink); err != nil {
-			return err
+			return stats, err
 		}
 		if _, err := os.Lstat(publicPath); os.IsNotExist(err) {
 			if err := os.Rename(tmpLink, publicPath); err != nil {
 				os.Remove(tmpLink)
-				return err
+				return stats, err
 			}
+			stats.created++
 			continue
 		}
 		// Existing public paths are atomically exchanged rather than removed and
 		// recreated, so readers never observe a missing path during promotion.
 		if err := publicfs.Exchange(tmpLink, publicPath); err != nil {
 			os.Remove(tmpLink)
-			return err
+			return stats, err
 		}
 		if err := appendExchangedPath(exchangedPathsFile, tmpLink); err != nil {
-			return err
+			return stats, err
 		}
 		if err := os.RemoveAll(tmpLink); err != nil {
-			return err
+			return stats, err
 		}
+		stats.exchanged++
 	}
-	return nil
+	return stats, nil
 }
 
 func switchCurrent(layout state.DocrootLayout, releaseID string) error {
@@ -473,8 +536,10 @@ func discoverDocrootFacts(docroot, deploymentID string, collectBoundaries, colle
 			}
 			return nil
 		}
+		facts.entries++
 
 		if entry.Type()&os.ModeSymlink != 0 {
+			facts.symlinks++
 			if deploymentID == "" {
 				return nil
 			}
@@ -535,6 +600,51 @@ func discoverDocrootFacts(docroot, deploymentID string, collectBoundaries, colle
 func materializedClaims(docroot, deploymentID string) ([]string, error) {
 	facts, err := discoverDocrootFacts(docroot, deploymentID, false, false)
 	return facts.materialized, err
+}
+
+func promotePhase(collector *report.Collector, name string, fn func() error) error {
+	if collector == nil {
+		return fn()
+	}
+	stop := collector.Phase(name)
+	err := fn()
+	stop()
+	if err != nil {
+		collector.SetFailedPhase(name)
+	}
+	return err
+}
+
+func recordDocrootStats(collector *report.Collector, facts docrootFacts) {
+	if collector == nil {
+		return
+	}
+	collector.Stats().DocrootScan = report.DocrootScanStats{
+		Entries:          facts.entries,
+		Symlinks:         facts.symlinks,
+		Boundaries:       len(facts.boundaries),
+		ProtectedAnchors: len(facts.protectedAnchors),
+	}
+}
+
+func recordClaimStats(collector *report.Collector, newClaims, oldClaims, materialized, removed []string) {
+	if collector == nil {
+		return
+	}
+	stats := collector.Stats()
+	stats.Claims.New = len(newClaims)
+	stats.Claims.Old = len(oldClaims)
+	stats.Claims.Materialized = len(materialized)
+	stats.Claims.Removed = len(removed)
+	stats.Claims.Reconciled = len(newClaims)
+}
+
+func recordReconcileStats(collector *report.Collector, reconcile reconcileStats) {
+	if collector == nil {
+		return
+	}
+	collector.Stats().Claims.Created = reconcile.created
+	collector.Stats().Claims.Exchanged = reconcile.exchanged
 }
 
 func rootOwnedOrRootGroup(info os.FileInfo) bool {

@@ -198,14 +198,16 @@ flowchart TD
   RSYNC["rsync source to incoming"]
   PROMOTE["Promote incoming release"]
   META["write release metadata"]
+  REPORT["finalize deploy report"]
+  UNLOCK["release deployment lock"]
   PRINT{"NoOp?"}
 
   PARSE --> REF
   REF -->|"none"| LOAD
   REF -->|"branch/tag/commit"| LOAD
   LOAD --> ENGINE --> REQUIRE --> REPO --> FETCH --> RESOLVE --> LOCK --> SWEEP --> NOOP
-  NOOP -->|"yes"| PRINT
-  NOOP -->|"no or --force"| WORKTREE --> FEATURES --> ROOT --> RSYNC --> PROMOTE --> META --> PRINT
+  NOOP -->|"yes"| PRINT --> REPORT --> UNLOCK
+  NOOP -->|"no or --force"| WORKTREE --> FEATURES --> ROOT --> RSYNC --> PROMOTE --> META --> PRINT --> REPORT --> UNLOCK
 ```
 
 Source anchors:
@@ -222,6 +224,7 @@ Source anchors:
 - Rsync incoming: [internal/engine/deploy.go](../internal/engine/deploy.go#L359)
 - Promotion call: [internal/engine/deploy.go](../internal/engine/deploy.go#L128)
 - Metadata write: [internal/engine/deploy.go](../internal/engine/deploy.go#L147)
+- Deploy report: [internal/report/report.go](../internal/report/report.go#L225)
 
 ### Deploy Decision Tree
 
@@ -316,6 +319,7 @@ Deploy decisions:
 | Git LFS | Hydrate LFS files and reject remaining pointer files. | Fail before rsync. | Prevents publishing pointer text where binary/site assets are expected. |
 | Deploy root | Use configured subdirectory as effective repo root. | Fail if missing or not a directory. | Monorepo/build-output deploys should publish subfolder contents at docroot root. |
 | Rsync staging | Copy source into incoming, hardlinking unchanged files where possible. | Fail before promotion. | Incoming must be complete before public claims are touched. |
+| Deploy report | Write bounded `runs.jsonl` history and, for successful non-no-op deploys, a release stats sidecar. | Report write errors are warned and swallowed. | Operator timing/statistics artifacts should never change deploy success or failure semantics. |
 
 ### Promotion Decision Tree
 

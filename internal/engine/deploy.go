@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/execx"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/lock"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/releases"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/report"
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/state"
 )
 
@@ -24,75 +27,155 @@ type DeployOptions struct {
 	Force               bool
 	PostDeployOverride  string
 	MaintenanceOverride *config.Maintenance
+	ToolVersion         string
 }
 
 type DeployResult struct {
 	ReleaseID string
 	Commit    string
 	NoOp      bool
+	Report    string
 }
 
-func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
-	if err := execx.RequireCommands(ctx, []string{"git", "rsync"}); err != nil {
-		return DeployResult{}, err
-	}
+func Deploy(ctx context.Context, options DeployOptions) (result DeployResult, err error) {
 	if options.RefMode == "" {
 		options.RefMode = "branch"
 		options.RefValue = options.Config.DefaultRef
 	}
 	layout := state.New(options.StateRoot)
 	docrootLayout := state.NewDocroot(options.Config.Docroot, options.Config.DeploymentID)
-	repoDir := layout.Repo(options.Config.Name)
-	env := gitEnvironment(options.Config)
-	if err := ensureRepo(ctx, repoDir, options.Config.RepoURL, env); err != nil {
+	collector := report.New(report.Options{
+		ToolVersion:  options.ToolVersion,
+		Name:         options.Config.Name,
+		DeploymentID: options.Config.DeploymentID,
+		RefMode:      options.RefMode,
+		RefValue:     options.RefValue,
+		DeployRoot:   options.Config.DeployRoot,
+		Force:        options.Force,
+		RunsPath:     layout.Runs(options.Config.Name),
+		LatestPath:   layout.LatestRun(options.Config.Name),
+	})
+	var deployErr error
+	status := "failed"
+	var deployLock *lock.Lock
+	defer func() {
+		if err != nil && deployErr == nil {
+			deployErr = err
+		}
+		if err := collector.Finish(status, deployErr); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write deploy report: %v\n", err)
+		}
+		if deployLock != nil {
+			_ = deployLock.Close()
+		}
+	}()
+
+	if err := runPhase(collector, "require_commands", func() error {
+		return execx.RequireCommands(ctx, []string{"git", "rsync"})
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
-	if _, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	repoDir := layout.Repo(options.Config.Name)
+	env := gitEnvironment(options.Config)
+	if err := runPhase(collector, "ensure_repo", func() error {
+		return ensureRepo(ctx, repoDir, options.Config.RepoURL, env)
+	}); err != nil {
+		deployErr = err
+		return DeployResult{}, err
+	}
+	if err := runPhase(collector, "fetch", func() error {
+		_, err := git(ctx, repoDir, env, "fetch", "--tags", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*")
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
 	// The repository cache is long-lived, so let Git opportunistically maintain
 	// it after network fetches without making deployment depend on GC success.
+	stopGC := collector.Phase("git_gc")
 	_, _ = git(ctx, repoDir, nil, "gc", "--auto")
-	commit, err := resolveRef(ctx, repoDir, options.RefMode, options.RefValue)
-	if err != nil {
+	stopGC()
+	var commit string
+	if err := runPhase(collector, "resolve_ref", func() error {
+		var err error
+		commit, err = resolveRef(ctx, repoDir, options.RefMode, options.RefValue)
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
+	collector.SetCommit(commit)
 	if err := os.MkdirAll(docrootLayout.Base(), 0o755); err != nil {
+		deployErr = err
+		collector.SetFailedPhase("prepare_docroot_namespace")
 		return DeployResult{}, err
 	}
-	deployLock, err := lock.Acquire(docrootLayout.Lock())
-	if err != nil {
+	if err := runPhase(collector, "lock_acquire", func() error {
+		var err error
+		deployLock, err = lock.Acquire(docrootLayout.Lock())
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
-	defer deployLock.Close()
 	// The lock is held before the no-op check so a cron deploy can still clean
 	// staging left by a killed earlier process even when there is no new commit.
-	if err := cleanupStaleStaging(ctx, repoDir, layout, docrootLayout, options.Config.Name, ""); err != nil {
+	var sweepStats report.StagingSweepStats
+	if err := runPhase(collector, "stale_staging_cleanup", func() error {
+		var err error
+		sweepStats, err = cleanupStaleStaging(ctx, repoDir, layout, docrootLayout, options.Config.Name, "")
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
+	collector.Stats().StagingSweep = sweepStats
 	if !options.Force {
 		// A cron-safe deploy is a no-op only when both the resolved commit and
 		// deploy root match the currently active release metadata.
-		if currentMeta, ok := loadCurrentMetadata(docrootLayout); ok && releases.CurrentMatches(currentMeta, commit, options.Config.DeployRoot) {
-			return DeployResult{ReleaseID: currentMeta.ReleaseID, Commit: commit, NoOp: true}, nil
+		var currentMeta releases.Metadata
+		var noop bool
+		stopNoOp := collector.Phase("noop_check")
+		if meta, ok := loadCurrentMetadata(docrootLayout); ok && releases.CurrentMatches(meta, commit, options.Config.DeployRoot) {
+			currentMeta = meta
+			noop = true
+		}
+		stopNoOp()
+		if noop {
+			collector.SetRelease(currentMeta.ReleaseID)
+			status = "no_op"
+			return DeployResult{ReleaseID: currentMeta.ReleaseID, Commit: commit, NoOp: true, Report: collector.ReportPath()}, nil
 		}
 	}
 	releaseID, err := releases.NewID(time.Now(), commit)
 	if err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
+	collector.SetRelease(releaseID)
+	collector.SetSidecar(docrootLayout.ReleaseStats(releaseID))
 	worktree := layout.Worktree(options.Config.Name, releaseID)
 	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+		deployErr = err
+		collector.SetFailedPhase("worktree_add")
 		return DeployResult{}, err
 	}
-	defer os.RemoveAll(worktree)
-	if _, err := git(ctx, repoDir, env, "worktree", "add", "--detach", worktree, commit); err != nil {
+	defer timedCleanup(collector, "worktree_cleanup", func() {
+		_ = os.RemoveAll(worktree)
+		_, _ = git(ctx, repoDir, nil, "worktree", "remove", "--force", worktree)
+		_, _ = git(ctx, repoDir, nil, "worktree", "prune")
+	})
+	if err := runPhase(collector, "worktree_add", func() error {
+		_, err := git(ctx, repoDir, env, "worktree", "add", "--detach", worktree, commit)
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
-	defer git(ctx, repoDir, nil, "worktree", "remove", "--force", worktree)
-	defer git(ctx, repoDir, nil, "worktree", "prune")
 
-	if err := prepareGitFeatures(ctx, worktree, env); err != nil {
+	if err := prepareGitFeatures(ctx, worktree, env, collector); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
 
@@ -104,17 +187,28 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 		if err == nil {
 			err = fmt.Errorf("not a directory")
 		}
-		return DeployResult{}, fmt.Errorf("deploy root does not exist or is not a directory: %s: %w", emptyAsDot(options.Config.DeployRoot), err)
+		deployErr = fmt.Errorf("deploy root does not exist or is not a directory: %s: %w", emptyAsDot(options.Config.DeployRoot), err)
+		collector.SetFailedPhase("deploy_root")
+		return DeployResult{}, deployErr
 	}
 	incoming := docrootLayout.Incoming(releaseID)
 	if err := os.RemoveAll(incoming); err != nil {
+		deployErr = err
+		collector.SetFailedPhase("rsync_incoming")
 		return DeployResult{}, err
 	}
 	if err := os.MkdirAll(incoming, 0o755); err != nil {
+		deployErr = err
+		collector.SetFailedPhase("rsync_incoming")
 		return DeployResult{}, err
 	}
 	defer os.RemoveAll(incoming)
-	if err := copySourceToIncoming(ctx, source, incoming, docrootLayout); err != nil {
+	if err := runPhase(collector, "rsync_incoming", func() error {
+		rsyncStats, err := copySourceToIncoming(ctx, source, incoming, docrootLayout)
+		collector.SetRsync(rsyncStats)
+		return err
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
 	maintenance := options.Config.Maintenance
@@ -133,7 +227,9 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 		KeepReleases: options.Config.KeepReleases,
 		PostDeploy:   postDeploy,
 		Maintenance:  maintenance,
+		Report:       collector,
 	}, docrootLayout); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
 	meta := releases.Metadata{
@@ -144,45 +240,56 @@ func Deploy(ctx context.Context, options DeployOptions) (DeployResult, error) {
 		DeployRoot: options.Config.DeployRoot,
 		DeployedAt: time.Now().UTC(),
 	}
-	if err := releases.SaveMetadata(docrootLayout.ReleaseMetadata(releaseID), meta); err != nil {
+	if err := runPhase(collector, "metadata_write", func() error {
+		return releases.SaveMetadata(docrootLayout.ReleaseMetadata(releaseID), meta)
+	}); err != nil {
+		deployErr = err
 		return DeployResult{}, err
 	}
-	return DeployResult{ReleaseID: releaseID, Commit: commit}, nil
+	status = "success"
+	return DeployResult{ReleaseID: releaseID, Commit: commit, Report: collector.ReportPath()}, nil
 }
 
-func cleanupStaleStaging(ctx context.Context, repoDir string, layout state.Layout, docrootLayout state.DocrootLayout, name, currentReleaseID string) error {
+func cleanupStaleStaging(ctx context.Context, repoDir string, layout state.Layout, docrootLayout state.DocrootLayout, name, currentReleaseID string) (report.StagingSweepStats, error) {
 	// A SIGKILL or host failure can leave both the worktree directory and Git's
 	// admin record behind. Remove stale directories first, then ask Git to prune
 	// any now-dangling admin records from the bare repo cache.
-	if err := removeStaleChildren(layout.WorktreeRoot(name), currentReleaseID); err != nil {
-		return err
+	worktreesRemoved, err := removeStaleChildren(layout.WorktreeRoot(name), currentReleaseID)
+	if err != nil {
+		return report.StagingSweepStats{}, err
 	}
 	_, _ = git(ctx, repoDir, nil, "worktree", "prune")
 	// Incoming directories live under the docroot namespace and are safe to
 	// remove before staging because each deploy uses a fresh release id.
-	if err := removeStaleChildren(docrootLayout.IncomingRoot(), currentReleaseID); err != nil {
-		return err
+	incomingRemoved, err := removeStaleChildren(docrootLayout.IncomingRoot(), currentReleaseID)
+	if err != nil {
+		return report.StagingSweepStats{}, err
 	}
-	return nil
+	return report.StagingSweepStats{
+		StaleWorktreesRemoved: worktreesRemoved,
+		StaleIncomingRemoved:  incomingRemoved,
+	}, nil
 }
 
-func removeStaleChildren(root, keepName string) error {
+func removeStaleChildren(root, keepName string) (int, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return err
+		return 0, err
 	}
+	removed := 0
 	for _, entry := range entries {
 		if entry.Name() == keepName {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-			return err
+			return removed, err
 		}
+		removed++
 	}
-	return nil
+	return removed, nil
 }
 
 func ensureRepo(ctx context.Context, repoDir, repoURL string, env []string) error {
@@ -282,24 +389,45 @@ func gitEnvironment(deployment config.Deployment) []string {
 	return []string{"GIT_SSH_COMMAND=" + auth.GitSSHCommand(deployment.SSHKeyPath)}
 }
 
-func prepareGitFeatures(ctx context.Context, worktree string, env []string) error {
+func prepareGitFeatures(ctx context.Context, worktree string, env []string, collector *report.Collector) error {
+	stopSubmodules := phaseOrNoop(collector, "git_features.submodules")
+	hasSubmodules := false
 	if _, err := os.Stat(filepath.Join(worktree, ".gitmodules")); err == nil {
+		hasSubmodules = true
+	} else if err != nil && !os.IsNotExist(err) {
+		stopSubmodules()
+		setFailedPhase(collector, "git_features.submodules")
+		return err
+	}
+	if hasSubmodules {
 		// Submodules are part of the deployed tree contract. After initializing,
 		// verify none remain with the leading "-" status marker Git uses for an
 		// uninitialized submodule.
-		if _, err := runCommand(ctx, "git", []string{"submodule", "update", "--init", "--recursive"}, worktree, env); err != nil {
+		result, err := runCommand(ctx, "git", []string{"submodule", "update", "--init", "--recursive"}, worktree, env)
+		if err != nil {
+			stopSubmodules()
+			setFailedPhase(collector, "git_features.submodules")
 			return err
 		}
+		_ = result
 		status, err := runCommand(ctx, "git", []string{"submodule", "status", "--recursive"}, worktree, nil)
 		if err != nil {
+			stopSubmodules()
+			setFailedPhase(collector, "git_features.submodules")
 			return err
 		}
 		for _, line := range strings.Split(status.Stdout, "\n") {
 			if strings.HasPrefix(line, "-") {
+				stopSubmodules()
+				setFailedPhase(collector, "git_features.submodules")
 				return fmt.Errorf("one or more submodules are uninitialized")
+			}
+			if collector != nil && strings.TrimSpace(line) != "" {
+				collector.Stats().Git.Submodules++
 			}
 		}
 	}
+	stopSubmodules()
 
 	// Use Git's attribute parser in one NUL-delimited batch so LFS detection
 	// follows Git's effective .gitattributes rules without per-file processes.
@@ -317,27 +445,44 @@ func prepareGitFeatures(ctx context.Context, worktree string, env []string) erro
 		return err
 	}
 	lfsPaths := lfsPathsFromCheckAttr(attrs.Stdout)
+	if collector != nil {
+		collector.Stats().Git.LFSPaths = len(lfsPaths)
+	}
+	stopLFS := phaseOrNoop(collector, "git_features.lfs_pull")
 	if len(lfsPaths) == 0 {
+		stopLFS()
 		return nil
 	}
+	if collector != nil {
+		collector.Stats().Git.UsedLFS = true
+	}
 	if err := execx.RequireCommands(ctx, []string{"git-lfs"}); err != nil {
+		stopLFS()
+		setFailedPhase(collector, "git_features.lfs_pull")
 		return fmt.Errorf("git-lfs is required for repositories using Git LFS: %w", err)
 	}
 	if _, err := runCommand(ctx, "git-lfs", []string{"install", "--local"}, worktree, env); err != nil {
+		stopLFS()
+		setFailedPhase(collector, "git_features.lfs_pull")
 		return err
 	}
 	if _, err := runCommand(ctx, "git-lfs", []string{"pull"}, worktree, env); err != nil {
+		stopLFS()
+		setFailedPhase(collector, "git_features.lfs_pull")
 		return err
 	}
+	stopLFS()
 	for _, path := range lfsPaths {
 		data, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(path)))
 		if err != nil {
+			setFailedPhase(collector, "git_features.lfs_pull")
 			return err
 		}
 		if strings.HasPrefix(string(data), "version https://git-lfs.github.com/spec/v1\n") {
 			// Only LFS-tracked paths are checked for pointer content. That catches
 			// failed hydration without rejecting an ordinary text file that happens
 			// to contain similar-looking content.
+			setFailedPhase(collector, "git_features.lfs_pull")
 			return fmt.Errorf("Git LFS pointer files remain after git lfs pull")
 		}
 	}
@@ -356,21 +501,21 @@ func lfsPathsFromCheckAttr(output string) []string {
 	return paths
 }
 
-func copySourceToIncoming(ctx context.Context, source, incoming string, layout state.DocrootLayout) error {
+func copySourceToIncoming(ctx context.Context, source, incoming string, layout state.DocrootLayout) (*report.RsyncStats, error) {
 	excludes, err := os.CreateTemp("", "wpcloud-site-git-deploy-excludes.*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	excludePath := excludes.Name()
 	defer os.Remove(excludePath)
 	if _, err := excludes.WriteString(defaultExcludes()); err != nil {
 		excludes.Close()
-		return err
+		return nil, err
 	}
 	if err := excludes.Close(); err != nil {
-		return err
+		return nil, err
 	}
-	args := []string{"-a", "--delete", "--exclude-from=" + excludePath}
+	args := []string{"-a", "--delete", "--stats", "--exclude-from=" + excludePath}
 	if current := currentReleasePath(layout); current != "" {
 		if info, err := os.Stat(current); err == nil && info.IsDir() {
 			// Link-dest hardlinks unchanged files against the active release. The
@@ -379,8 +524,98 @@ func copySourceToIncoming(ctx context.Context, source, incoming string, layout s
 		}
 	}
 	args = append(args, source+string(os.PathSeparator), incoming+string(os.PathSeparator))
-	_, err = runCommand(ctx, "rsync", args, "", nil)
+	result, err := execx.Run(ctx, execx.Command{Name: "rsync", Args: args, Env: []string{"LC_ALL=C"}})
+	stats := parseRsyncStats(result.Stdout)
+	return stats, err
+}
+
+func parseRsyncStats(output string) *report.RsyncStats {
+	stats := &report.RsyncStats{}
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		normalized := strings.TrimSpace(key)
+		text := strings.TrimSpace(value)
+		switch normalized {
+		case "Number of regular files transferred":
+			if parsed, ok := parseRsyncInt(text); ok {
+				stats.FilesTransferred = int(parsed)
+				found = true
+			}
+		case "Number of files":
+			if parsed, ok := parseRsyncInt(strings.Split(text, " ")[0]); ok {
+				stats.TotalFiles = int(parsed)
+				found = true
+			}
+		case "Literal data":
+			if parsed, ok := parseRsyncInt(text); ok {
+				stats.LiteralDataBytes = parsed
+				found = true
+			}
+		case "Matched data":
+			if parsed, ok := parseRsyncInt(text); ok {
+				stats.MatchedDataBytes = parsed
+				found = true
+			}
+		case "Total file size":
+			if parsed, ok := parseRsyncInt(text); ok {
+				stats.TotalSizeBytes = parsed
+				found = true
+			}
+		case "speedup":
+			if parsed, err := strconv.ParseFloat(strings.TrimSpace(text), 64); err == nil {
+				stats.Speedup = parsed
+				found = true
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	return stats
+}
+
+var rsyncNumberPattern = regexp.MustCompile(`[^0-9-]`)
+
+func parseRsyncInt(value string) (int64, bool) {
+	cleaned := rsyncNumberPattern.ReplaceAllString(value, "")
+	if cleaned == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(cleaned, 10, 64)
+	return parsed, err == nil
+}
+
+func runPhase(collector *report.Collector, name string, fn func() error) error {
+	stop := phaseOrNoop(collector, name)
+	err := fn()
+	stop()
+	if err != nil {
+		setFailedPhase(collector, name)
+	}
 	return err
+}
+
+func timedCleanup(collector *report.Collector, name string, fn func()) {
+	stop := phaseOrNoop(collector, name)
+	fn()
+	stop()
+}
+
+func phaseOrNoop(collector *report.Collector, name string) func() {
+	if collector == nil {
+		return func() {}
+	}
+	return collector.Phase(name)
+}
+
+func setFailedPhase(collector *report.Collector, name string) {
+	if collector != nil {
+		collector.SetFailedPhase(name)
+	}
 }
 
 func defaultExcludes() string {

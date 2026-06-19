@@ -134,6 +134,17 @@ wpcloud-site-git-deploy destroy --name site --confirm-destroy=site
 `update` is intentionally removed. `deploy --name site` with no explicit
 `--branch`, `--tag`, or `--commit` deploys the configured default ref.
 
+Deploy output includes a `report=` path. The tool always writes a structured JSON
+timing/statistics report for each deploy attempt. The complete bounded history is
+kept at `$HOME/.wpcloud-site-git-deploy/deployments/<name>/runs.jsonl`, retaining
+the latest 200 attempts. Successful non-no-op deploys also write
+`/srv/htdocs/.wpcloud-site-git-deploy/deployments/<id>/metadata/<release-id>.stats.json`
+beside release metadata and copy that success record to
+`$HOME/.wpcloud-site-git-deploy/deployments/<name>/latest-run.json`. Failures and
+no-ops stay in the `$HOME` state history only and never create docroot stats
+sidecars. Reports identify content by ref and commit, not by `repo_url`, so a
+repository URL containing an embedded token is not copied into the artifact.
+
 All command input is flag-based. There are no positional deployment names in the
 Go CLI.
 

@@ -271,14 +271,15 @@ func runDeploy(ctx context.Context, layout state.Layout, cmd Command, stdout io.
 		Force:               cmd.Force,
 		PostDeployOverride:  cmd.PostDeploy,
 		MaintenanceOverride: maintenanceOverride(cmd),
+		ToolVersion:         Version,
 	})
 	if err != nil {
 		return err
 	}
 	if result.NoOp {
-		_, _ = fmt.Fprintf(stdout, "no_op=true release_id=%s commit=%s\n", result.ReleaseID, result.Commit)
+		_, _ = fmt.Fprintf(stdout, "no_op=true release_id=%s commit=%s report=%s\n", result.ReleaseID, result.Commit, result.Report)
 	} else {
-		_, _ = fmt.Fprintf(stdout, "release_id=%s commit=%s\n", result.ReleaseID, result.Commit)
+		_, _ = fmt.Fprintf(stdout, "release_id=%s commit=%s report=%s\n", result.ReleaseID, result.Commit, result.Report)
 	}
 	return nil
 }

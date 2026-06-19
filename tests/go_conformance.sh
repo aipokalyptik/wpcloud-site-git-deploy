@@ -12,6 +12,54 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+json_report_check="$tmpdir/json-report-check.go"
+cat >"$json_report_check" <<'EOF'
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func main() {
+	data, err := os.ReadFile(os.Getenv("REPORT_PATH"))
+	if err != nil {
+		panic(err)
+	}
+	var record struct {
+		SchemaVersion int    `json:"schema_version"`
+		Status        string `json:"status"`
+		Phases        []struct {
+			Name       string `json:"name"`
+			DurationMS int64  `json:"duration_ms"`
+		} `json:"phases"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		lines := bytes.Split(data, []byte("\n"))
+		for i := len(lines) - 1; i >= 0; i-- {
+			if len(bytes.TrimSpace(lines[i])) > 0 {
+				data = lines[i]
+				break
+			}
+		}
+		if err := json.Unmarshal(data, &record); err != nil {
+			panic(err)
+		}
+	}
+	if record.SchemaVersion != 1 {
+		panic(fmt.Sprintf("unexpected schema version %d", record.SchemaVersion))
+	}
+	if record.Status != os.Getenv("EXPECTED_STATUS") {
+		panic(fmt.Sprintf("unexpected status %q", record.Status))
+	}
+	if len(record.Phases) == 0 {
+		panic("expected at least one phase")
+	}
+}
+EOF
+
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
@@ -81,6 +129,30 @@ release_count() {
   find "$releases_dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '
 }
 
+report_path_from_output() {
+  local file="$1"
+  awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^report=/) {
+          sub(/^report=/, "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$file"
+}
+
+assert_json_report() {
+  local path="$1"
+  local expected_status="$2"
+
+  test -n "$path" || fail "report path was not printed"
+  test -f "$path" || fail "report path does not exist: $path"
+  REPORT_PATH="$path" EXPECTED_STATUS="$expected_status" go run "$json_report_check"
+}
+
 if [[ ! -x "$binary" ]]; then
   mkdir -p "$(dirname "$binary")"
   version="$(git -C "$repo_root" describe --tags --dirty --always 2>/dev/null || printf dev)"
@@ -142,6 +214,7 @@ HOME="$home_dir" "$binary" list >"$tmpdir/list.txt"
 assert_contains "site" "$tmpdir/list.txt"
 
 HOME="$home_dir" "$binary" deploy --name site --tag v1 >"$tmpdir/deploy-tag.txt"
+assert_json_report "$(report_path_from_output "$tmpdir/deploy-tag.txt")" success
 grep -Fx 'hello from main' "$docroot/index.html" >/dev/null || fail "tag deploy did not publish main content"
 test ! -e "$docroot/.env" || fail ".env should be excluded"
 test ! -e "$docroot/.github" || fail ".github should be excluded"
@@ -181,6 +254,7 @@ HOME="$home_dir" "$binary" deploy --name site >"$tmpdir/deploy-default.txt"
 grep -Fx 'hello from late main' "$docroot/index.html" >/dev/null || fail "default deploy did not publish latest main"
 before_noop="$(release_count "$docroot" site)"
 HOME="$home_dir" "$binary" deploy --name site >"$tmpdir/deploy-noop.txt"
+assert_json_report "$(report_path_from_output "$tmpdir/deploy-noop.txt")" no_op
 after_noop="$(release_count "$docroot" site)"
 [[ "$before_noop" == "$after_noop" ]] || fail "no-op deploy should not create a new release"
 assert_contains "no_op=true" "$tmpdir/deploy-noop.txt"

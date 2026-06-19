@@ -98,7 +98,7 @@ func TestRunDeployUsesDefaultRef(t *testing.T) {
 	if err := Run(t.Context(), []string{"deploy", "--name", "site"}, &stdout, &stderr); err != nil {
 		t.Fatalf("deploy failed: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "release_id=") || !strings.Contains(stdout.String(), "commit=") {
+	if !strings.Contains(stdout.String(), "release_id=") || !strings.Contains(stdout.String(), "commit=") || !strings.Contains(stdout.String(), "report=") {
 		t.Fatalf("unexpected deploy output: %s", stdout.String())
 	}
 	if got := string(mustReadFile(t, filepath.Join(docroot, "index.html"))); got != "hello\n" {
@@ -106,6 +106,10 @@ func TestRunDeployUsesDefaultRef(t *testing.T) {
 	}
 	firstRelease := strings.Fields(strings.TrimSpace(stdout.String()))[0]
 	firstRelease = strings.TrimPrefix(firstRelease, "release_id=")
+	reportPath := strings.TrimPrefix(strings.Fields(strings.TrimSpace(stdout.String()))[2], "report=")
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("printed report path should exist: %v", err)
+	}
 
 	stdout.Reset()
 	if err := Run(t.Context(), []string{"releases", "--name", "site"}, &stdout, &stderr); err != nil {

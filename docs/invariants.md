@@ -140,6 +140,22 @@ must preserve.
 - Keep-release pruning preserves the active release and retains the configured
   number of releases.
 
+## Deploy Reports
+
+- Every deploy attempt writes a structured JSON report with schema version,
+  version, ref, commit, status, ordered phase timings, and operational counters.
+- The canonical deploy report history is
+  `$HOME/.wpcloud-site-git-deploy/deployments/<name>/runs.jsonl`.
+- `runs.jsonl` is bounded to the most recent 200 attempts by default and must not
+  grow without limit.
+- Successful non-no-op deploys write a stats sidecar next to release metadata at
+  `$docroot/.wpcloud-site-git-deploy/deployments/<id>/metadata/<release-id>.stats.json`.
+- No-op and failed deploy reports remain in the `$HOME` state history only and
+  must not write docroot stats sidecars.
+- Report write failures must not change deploy success or failure semantics.
+- Reports must not include `repo_url`, because repository URLs may contain
+  embedded credentials.
+
 ## Auth And Doctor
 
 - `auth` can generate, reuse, use, import, remove, and purge deploy keys.

@@ -23,6 +23,14 @@ func (l Layout) DeploymentConfig(name string) string {
 	return filepath.Join(l.DeploymentDir(name), "config.json")
 }
 
+func (l Layout) Runs(name string) string {
+	return filepath.Join(l.DeploymentDir(name), "runs.jsonl")
+}
+
+func (l Layout) LatestRun(name string) string {
+	return filepath.Join(l.DeploymentDir(name), "latest-run.json")
+}
+
 func (l Layout) Repo(name string) string {
 	return filepath.Join(l.Root, "repos", name)
 }
@@ -78,6 +86,10 @@ func (l DocrootLayout) Release(releaseID string) string {
 
 func (l DocrootLayout) ReleaseMetadata(releaseID string) string {
 	return filepath.Join(l.Base(), "metadata", releaseID+".json")
+}
+
+func (l DocrootLayout) ReleaseStats(releaseID string) string {
+	return filepath.Join(l.Base(), "metadata", releaseID+".stats.json")
 }
 
 func (l DocrootLayout) Lock() string {
