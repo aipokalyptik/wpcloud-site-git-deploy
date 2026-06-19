@@ -3,12 +3,14 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/config"
+	"github.com/aipokalyptik/wpcloud-site-git-deploy/internal/publicfs"
 )
 
 func TestPromoteCreatesPublicSymlinkAndCurrent(t *testing.T) {
@@ -206,6 +208,41 @@ func TestPromoteLeavesParentDirectoriesAfterRemovingClaim(t *testing.T) {
 	}
 }
 
+func TestCleanupOverlappingRemovedClaimsRemovesOnlyOverlaps(t *testing.T) {
+	docroot := t.TempDir()
+	deploymentID := "site"
+	removedClaims := []string{
+		"same",
+		"ancestor",
+		"descendant/leaf",
+		"gone",
+	}
+	for _, claim := range removedClaims {
+		path := filepath.Join(docroot, filepath.FromSlash(claim))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(publicfs.PublicSymlinkTarget(deploymentID, claim), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanupOverlappingRemovedClaims(docroot, deploymentID, removedClaims, []string{
+		"same",
+		"ancestor/child",
+		"descendant",
+	})
+
+	for _, claim := range []string{"same", "ancestor", "descendant/leaf"} {
+		if _, err := os.Lstat(filepath.Join(docroot, filepath.FromSlash(claim))); !os.IsNotExist(err) {
+			t.Fatalf("overlapping removed claim %q should be gone, err=%v", claim, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(docroot, "gone")); err != nil {
+		t.Fatalf("non-overlapping removed claim should remain: %v", err)
+	}
+}
+
 func TestDiscoverBoundaryClaimsRequiresPrivilegedOwnership(t *testing.T) {
 	docroot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(docroot, "wp-content", "plugins"), 0o1777); err != nil {
@@ -237,6 +274,37 @@ func TestDiscoverProtectedAnchorsRequiresPrivilegedOwnership(t *testing.T) {
 	}
 }
 
+func TestDiscoverDocrootFactsCollectsOwnedSymlinksAndSkipsNamespace(t *testing.T) {
+	docroot := t.TempDir()
+	if err := os.Symlink(publicfs.PublicSymlinkTarget("site", "owned.txt"), filepath.Join(docroot, "owned.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(publicfs.PublicSymlinkTarget("other", "foreign.txt"), filepath.Join(docroot, "foreign.txt")); err != nil {
+		t.Fatal(err)
+	}
+	namespaceLink := filepath.Join(docroot, ".wpcloud-site-git-deploy", "deployments", "site", "current")
+	if err := os.MkdirAll(filepath.Dir(namespaceLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("releases/r1", namespaceLink); err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := discoverDocrootFacts(docroot, "site", true, true)
+	if err != nil {
+		t.Fatalf("discover docroot facts failed: %v", err)
+	}
+	if !slices.Equal(facts.materialized, []string{"owned.txt"}) {
+		t.Fatalf("unexpected materialized claims: %#v", facts.materialized)
+	}
+	if len(facts.boundaries) != 0 {
+		t.Fatalf("unexpected boundaries: %#v", facts.boundaries)
+	}
+	if len(facts.protectedAnchors) != 0 {
+		t.Fatalf("unexpected protected anchors: %#v", facts.protectedAnchors)
+	}
+}
+
 func TestStickyBoundaryPredicateRequiresPrivilegedOwnership(t *testing.T) {
 	tests := []struct {
 		name string
@@ -253,6 +321,33 @@ func TestStickyBoundaryPredicateRequiresPrivilegedOwnership(t *testing.T) {
 			info := fakeFileInfo{sys: &syscall.Stat_t{Uid: tt.uid, Gid: tt.gid}}
 			if got := rootOwnedOrRootGroup(info); got != tt.want {
 				t.Fatalf("rootOwnedOrRootGroup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateClaimsNotProtectedDetectsExactAncestorAndDescendant(t *testing.T) {
+	tests := []struct {
+		name      string
+		claims    []string
+		protected []string
+		wantErr   bool
+	}{
+		{name: "exact", claims: []string{"wp-config.php"}, protected: []string{"wp-config.php"}, wantErr: true},
+		{name: "claim below protected", claims: []string{"wp-content/plugins/demo"}, protected: []string{"wp-content"}, wantErr: true},
+		{name: "claim contains protected", claims: []string{"wp-content"}, protected: []string{"wp-content/plugins"}, wantErr: true},
+		{name: "root protected", claims: []string{"index.php"}, protected: []string{"."}, wantErr: true},
+		{name: "no overlap", claims: []string{"wp-content/themes"}, protected: []string{"wp-admin"}, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClaimsNotProtected(tt.claims, tt.protected)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected protected path error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected protected path error: %v", err)
 			}
 		})
 	}

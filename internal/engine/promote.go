@@ -42,6 +42,12 @@ type RollbackOptions struct {
 
 var deploymentTargetPattern = regexp.MustCompile(`(^|/)\.wpcloud-site-git-deploy/deployments/([^/]+)/current($|/)`)
 
+type docrootFacts struct {
+	boundaries       []string
+	protectedAnchors []string
+	materialized     []string
+}
+
 func Promote(options PromoteOptions) error {
 	layout := state.NewDocroot(options.Docroot, options.DeploymentID)
 	if err := os.MkdirAll(layout.Base(), 0o755); err != nil {
@@ -91,9 +97,13 @@ func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
 	if maintenanceOwned {
 		defer cleanupOwnedMaintenanceFile(options.Docroot, options.DeploymentID, options.Maintenance)
 	}
-	boundaries, err := effectiveBoundaries(options.Docroot, options.Boundaries)
+	facts, err := discoverDocrootFacts(options.Docroot, options.DeploymentID, len(options.Boundaries) == 0, true)
 	if err != nil {
 		return err
+	}
+	boundaries := options.Boundaries
+	if len(boundaries) == 0 {
+		boundaries = facts.boundaries
 	}
 	if err := os.Rename(incoming, release); err != nil {
 		return err
@@ -113,21 +123,13 @@ func promoteLocked(options PromoteOptions, layout state.DocrootLayout) error {
 	if err != nil {
 		return err
 	}
-	protectedAnchors, err := discoverProtectedAnchors(options.Docroot)
-	if err != nil {
-		return err
-	}
-	if err := validateClaimsNotProtected(newClaims, protectedAnchors); err != nil {
+	if err := validateClaimsNotProtected(newClaims, facts.protectedAnchors); err != nil {
 		return err
 	}
 	oldClaims, _ := claims.Compute(currentReleasePath(layout), boundaries, false)
-	materialized, err := materializedClaims(options.Docroot, options.DeploymentID)
-	if err != nil {
-		return err
-	}
 	// Materialized public symlinks are included because earlier failed or manual
 	// repairs can leave owned claims that are no longer derivable from current.
-	oldClaims = union(oldClaims, materialized)
+	oldClaims = union(oldClaims, facts.materialized)
 	removedClaims := claims.Removed(oldClaims, newClaims)
 	cleanupReleaseOnFailure = false
 	// If a path changes shape, such as file -> directory, remove the old owned
@@ -197,29 +199,21 @@ func Rollback(options RollbackOptions) error {
 	if maintenanceOwned {
 		defer cleanupOwnedMaintenanceFile(options.Config.Docroot, options.Config.DeploymentID, options.Config.Maintenance)
 	}
-	boundaries, err := discoverBoundaryClaims(options.Config.Docroot)
+	facts, err := discoverDocrootFacts(options.Config.Docroot, options.Config.DeploymentID, true, true)
 	if err != nil {
 		return err
 	}
-	newClaims, err := claims.Compute(release, boundaries, true)
+	newClaims, err := claims.Compute(release, facts.boundaries, true)
 	if err != nil {
 		return err
 	}
-	protectedAnchors, err := discoverProtectedAnchors(options.Config.Docroot)
-	if err != nil {
+	if err := validateClaimsNotProtected(newClaims, facts.protectedAnchors); err != nil {
 		return err
 	}
-	if err := validateClaimsNotProtected(newClaims, protectedAnchors); err != nil {
-		return err
-	}
-	oldClaims, _ := claims.Compute(currentReleasePath(layout), boundaries, false)
-	materialized, err := materializedClaims(options.Config.Docroot, options.Config.DeploymentID)
-	if err != nil {
-		return err
-	}
+	oldClaims, _ := claims.Compute(currentReleasePath(layout), facts.boundaries, false)
 	// Rollback does not create metadata or prune releases; it only recomputes
 	// the public claims needed to make the selected existing release active.
-	removedClaims := claims.Removed(union(oldClaims, materialized), newClaims)
+	removedClaims := claims.Removed(union(oldClaims, facts.materialized), newClaims)
 	cleanupOverlappingRemovedClaims(options.Config.Docroot, options.Config.DeploymentID, removedClaims, newClaims)
 	if err := reconcileNewClaims(options.Config.Docroot, options.Config.DeploymentID, newClaims); err != nil {
 		return err
@@ -345,52 +339,12 @@ func removeOwnedClaim(docroot, deploymentID, claim string) {
 }
 
 func cleanupOverlappingRemovedClaims(docroot, deploymentID string, removedClaims, newClaims []string) {
+	newClaimIndex := newPathOverlapIndex(newClaims)
 	for _, removedClaim := range removedClaims {
-		for _, newClaim := range newClaims {
-			if removedClaim == newClaim ||
-				strings.HasPrefix(removedClaim, newClaim+"/") ||
-				strings.HasPrefix(newClaim, removedClaim+"/") {
-				removeOwnedClaim(docroot, deploymentID, removedClaim)
-				break
-			}
+		if newClaimIndex.overlaps(removedClaim) {
+			removeOwnedClaim(docroot, deploymentID, removedClaim)
 		}
 	}
-}
-
-func materializedClaims(docroot, deploymentID string) ([]string, error) {
-	var result []string
-	err := filepath.WalkDir(docroot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == filepath.Join(docroot, state.DocrootNamespace) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink == 0 {
-			return nil
-		}
-		target, err := os.Readlink(path)
-		if err != nil {
-			return err
-		}
-		owner, ok := deploymentOwnerFromTarget(target)
-		if !ok || owner != deploymentID {
-			return nil
-		}
-		rel, err := filepath.Rel(docroot, path)
-		if err != nil {
-			return err
-		}
-		result = append(result, filepath.ToSlash(rel))
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 func rejectForeignAncestor(docroot, deploymentID, claim string) error {
@@ -493,54 +447,22 @@ func cleanupExchangedPaths(layout state.DocrootLayout) error {
 	return os.Remove(layout.ExchangedPaths())
 }
 
-func effectiveBoundaries(docroot string, explicit []string) ([]string, error) {
-	if len(explicit) > 0 {
-		return explicit, nil
-	}
-	return discoverBoundaryClaims(docroot)
-}
-
 func discoverBoundaryClaims(docroot string) ([]string, error) {
-	var boundaries []string
-	err := filepath.WalkDir(docroot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == filepath.Join(docroot, state.DocrootNamespace) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSticky == 0 {
-			return nil
-		}
-		// Match the Bash spec: only root-owned or root-group sticky directories
-		// become claim boundaries. Ordinary sticky dirs owned by the site user are
-		// not treated as protected WordPress platform structure.
-		if !rootOwnedOrRootGroup(info) {
-			return nil
-		}
-		rel, err := filepath.Rel(docroot, path)
-		if err != nil {
-			return err
-		}
-		boundaries = append(boundaries, filepath.ToSlash(rel))
-		return nil
-	})
-	sort.Strings(boundaries)
-	return boundaries, err
+	facts, err := discoverDocrootFacts(docroot, "", true, false)
+	return facts.boundaries, err
 }
 
 func discoverProtectedAnchors(docroot string) ([]string, error) {
-	var anchors []string
+	facts, err := discoverDocrootFacts(docroot, "", false, true)
+	return facts.protectedAnchors, err
+}
+
+// discoverDocrootFacts is the promotion-time docroot scan. Deploy and rollback
+// need boundaries, protected anchors, and owned materialized symlinks together,
+// so collecting them in one walk avoids repeatedly traversing large uploads
+// trees. Focused diagnostic callers can disable facts they do not need.
+func discoverDocrootFacts(docroot, deploymentID string, collectBoundaries, collectProtectedAnchors bool) (docrootFacts, error) {
+	var facts docrootFacts
 	err := filepath.WalkDir(docroot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -551,32 +473,68 @@ func discoverProtectedAnchors(docroot string) ([]string, error) {
 			}
 			return nil
 		}
+
 		if entry.Type()&os.ModeSymlink != 0 {
+			if deploymentID == "" {
+				return nil
+			}
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			owner, ok := deploymentOwnerFromTarget(target)
+			if !ok || owner != deploymentID {
+				return nil
+			}
+			rel, err := filepath.Rel(docroot, path)
+			if err != nil {
+				return err
+			}
+			facts.materialized = append(facts.materialized, filepath.ToSlash(rel))
 			return nil
 		}
+
 		info, err := entry.Info()
 		if err != nil {
 			return err
-		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok {
-			return fmt.Errorf("stat data unavailable for %s", path)
-		}
-		// unix.Access asks whether the current site user can write the path. That
-		// differs from inspecting mode bits and catches root-owned 0644 anchors.
-		writable := unix.Access(path, unix.W_OK) == nil
-		if !protectedAnchorCandidate(stat.Uid, stat.Gid, writable) {
-			return nil
 		}
 		rel, err := filepath.Rel(docroot, path)
 		if err != nil {
 			return err
 		}
-		anchors = append(anchors, filepath.ToSlash(rel))
+
+		if collectBoundaries && entry.IsDir() && info.Mode()&os.ModeSticky != 0 && rootOwnedOrRootGroup(info) {
+			// Match the Bash spec: only root-owned or root-group sticky
+			// directories become claim boundaries. Ordinary sticky dirs owned by
+			// the site user are not treated as protected WordPress platform
+			// structure.
+			facts.boundaries = append(facts.boundaries, filepath.ToSlash(rel))
+		}
+
+		if collectProtectedAnchors {
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok {
+				return fmt.Errorf("stat data unavailable for %s", path)
+			}
+			// unix.Access asks whether the current site user can write the path.
+			// That differs from inspecting mode bits and catches root-owned 0644
+			// anchors.
+			writable := unix.Access(path, unix.W_OK) == nil
+			if protectedAnchorCandidate(stat.Uid, stat.Gid, writable) {
+				facts.protectedAnchors = append(facts.protectedAnchors, filepath.ToSlash(rel))
+			}
+		}
 		return nil
 	})
-	sort.Strings(anchors)
-	return anchors, err
+	sort.Strings(facts.boundaries)
+	sort.Strings(facts.protectedAnchors)
+	sort.Strings(facts.materialized)
+	return facts, err
+}
+
+func materializedClaims(docroot, deploymentID string) ([]string, error) {
+	facts, err := discoverDocrootFacts(docroot, deploymentID, false, false)
+	return facts.materialized, err
 }
 
 func rootOwnedOrRootGroup(info os.FileInfo) bool {
@@ -595,21 +553,68 @@ func protectedAnchorCandidate(uid, gid uint32, writableByCurrentUser bool) bool 
 }
 
 func validateClaimsNotProtected(newClaims, protectedAnchors []string) error {
+	for _, protected := range protectedAnchors {
+		if protected == "." || protected == "" {
+			if len(newClaims) == 0 {
+				return nil
+			}
+			return fmt.Errorf("protected path: %s", newClaims[0])
+		}
+	}
+	protectedIndex := newPathOverlapIndex(protectedAnchors)
 	for _, claim := range newClaims {
-		for _, protected := range protectedAnchors {
-			if protected == "." || protected == "" {
-				return fmt.Errorf("protected path: %s", claim)
-			}
-			if claim == protected ||
-				strings.HasPrefix(claim, protected+"/") ||
-				strings.HasPrefix(protected, claim+"/") {
-				// Both ancestor and descendant overlaps are rejected so a deploy
-				// cannot replace a protected anchor or claim a parent that contains it.
-				return fmt.Errorf("protected path: %s", claim)
-			}
+		// Both ancestor and descendant overlaps are rejected so a deploy cannot
+		// replace a protected anchor or claim a parent that contains it.
+		if protectedIndex.overlaps(claim) {
+			return fmt.Errorf("protected path: %s", claim)
 		}
 	}
 	return nil
+}
+
+type pathOverlapIndex struct {
+	exact  map[string]struct{}
+	sorted []string
+}
+
+// pathOverlapIndex checks whether slash-separated public claims overlap without
+// comparing every candidate against every other candidate. An overlap means:
+// the same path, an indexed ancestor of the path, or an indexed descendant of
+// the path.
+func newPathOverlapIndex(paths []string) pathOverlapIndex {
+	index := pathOverlapIndex{
+		exact:  make(map[string]struct{}, len(paths)),
+		sorted: make([]string, 0, len(paths)),
+	}
+	for _, path := range paths {
+		index.exact[path] = struct{}{}
+		index.sorted = append(index.sorted, path)
+	}
+	sort.Strings(index.sorted)
+	return index
+}
+
+func (index pathOverlapIndex) overlaps(path string) bool {
+	if _, ok := index.exact[path]; ok {
+		return true
+	}
+	// Walk from "a/b/c" to "a/b" to "a" so ancestor checks cost path depth,
+	// not the size of the other claim set.
+	for ancestor := path; ; {
+		lastSlash := strings.LastIndex(ancestor, "/")
+		if lastSlash <= 0 {
+			break
+		}
+		ancestor = ancestor[:lastSlash]
+		if _, ok := index.exact[ancestor]; ok {
+			return true
+		}
+	}
+	descendantPrefix := path + "/"
+	// The first sorted value at or after "path/" is enough to know whether any
+	// indexed path lives under that prefix.
+	position := sort.SearchStrings(index.sorted, descendantPrefix)
+	return position < len(index.sorted) && strings.HasPrefix(index.sorted[position], descendantPrefix)
 }
 
 func runPostDeploy(ctx context.Context, docroot, postDeploy string) error {
